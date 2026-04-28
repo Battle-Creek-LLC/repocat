@@ -70,6 +70,8 @@ pub struct SecuritySettings {
     #[serde(default)]
     pub dependabot_security_updates: Option<bool>,
     #[serde(default)]
+    pub dependabot_config: Option<bool>,
+    #[serde(default)]
     pub dependency_review: Option<bool>,
     #[serde(default)]
     pub vulnerability_alerts: Option<bool>,

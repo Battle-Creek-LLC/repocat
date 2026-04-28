@@ -85,6 +85,37 @@ impl Client {
         Ok(())
     }
 
+    pub fn put_no_body(&self, path: &str) -> Result<()> {
+        let url = format!("https://api.github.com{path}");
+        ureq::put(&url)
+            .set("Authorization", &format!("Bearer {}", self.token))
+            .set("Accept", "application/vnd.github+json")
+            .set("X-GitHub-Api-Version", "2022-11-28")
+            .set("User-Agent", user_agent())
+            .set("Content-Length", "0")
+            .call()
+            .map_err(|e| match e {
+                ureq::Error::Status(code, r) => {
+                    let body = r.into_string().unwrap_or_default();
+                    anyhow!("PUT {url} → {code}: {body}")
+                }
+                other => anyhow!("transport error on PUT {url}: {other}"),
+            })?;
+        Ok(())
+    }
+
+    pub fn vulnerability_alerts_enabled(&self, org: &str, repo: &str) -> Result<bool> {
+        let path = format!("/repos/{org}/{repo}/vulnerability-alerts");
+        Ok(self.get_optional(&path)?.is_some())
+    }
+
+    pub fn automated_security_fixes_enabled(&self, org: &str, repo: &str) -> Result<bool> {
+        let path = format!("/repos/{org}/{repo}/automated-security-fixes");
+        let Some(resp) = self.get_optional(&path)? else { return Ok(false); };
+        let payload: AutomatedSecurityFixes = resp.into_json()?;
+        Ok(payload.enabled && !payload.paused)
+    }
+
     pub fn put_branch_protection(
         &self,
         org: &str,
@@ -137,6 +168,13 @@ impl Client {
 #[derive(Debug, Deserialize)]
 struct ContentPayload {
     content: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct AutomatedSecurityFixes {
+    enabled: bool,
+    #[serde(default)]
+    paused: bool,
 }
 
 #[derive(Debug, Deserialize)]
