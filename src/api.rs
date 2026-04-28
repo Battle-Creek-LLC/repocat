@@ -145,6 +145,14 @@ impl Client {
         Ok(self.get(&format!("/repos/{org}/{repo}"))?.into_json()?)
     }
 
+    /// Lists entries in a directory. Returns empty Vec if the path doesn't exist.
+    pub fn list_directory(&self, org: &str, repo: &str, path: &str) -> Result<Vec<DirEntry>> {
+        let encoded = path.split('/').map(urlencode).collect::<Vec<_>>().join("/");
+        let endpoint = format!("/repos/{org}/{repo}/contents/{encoded}");
+        let Some(resp) = self.get_optional(&endpoint)? else { return Ok(Vec::new()); };
+        Ok(resp.into_json()?)
+    }
+
     pub fn path_exists(&self, org: &str, repo: &str, path: &str) -> Result<bool> {
         let encoded = path.split('/').map(urlencode).collect::<Vec<_>>().join("/");
         let endpoint = format!("/repos/{org}/{repo}/contents/{encoded}");
@@ -178,6 +186,14 @@ impl Client {
 #[derive(Debug, Deserialize)]
 struct ContentPayload {
     content: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DirEntry {
+    pub name: String,
+    pub path: String,
+    #[serde(rename = "type")]
+    pub kind: String,
 }
 
 #[derive(Debug, Deserialize)]

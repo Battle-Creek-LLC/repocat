@@ -36,6 +36,10 @@ pub struct ActionsSettings {
     pub default_workflow_permissions: Option<String>,
     #[serde(default)]
     pub can_approve_pull_request_reviews: Option<bool>,
+    #[serde(default)]
+    pub pin_actions: Option<bool>,
+    #[serde(default)]
+    pub require_workflow_permissions: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
