@@ -8,6 +8,7 @@ use std::fmt;
 pub enum Action {
     PatchRepo { summary: String, body: Value },
     PutBranchProtection { summary: String, branch: String, body: Value },
+    SimplePut { summary: String, path: String },
 }
 
 impl Action {
@@ -15,6 +16,7 @@ impl Action {
         match self {
             Action::PatchRepo { summary, .. } => summary,
             Action::PutBranchProtection { summary, .. } => summary,
+            Action::SimplePut { summary, .. } => summary,
         }
     }
 
@@ -25,6 +27,9 @@ impl Action {
             }
             Action::PutBranchProtection { branch, body, .. } => {
                 client.put_branch_protection(org, repo, branch, body)?;
+            }
+            Action::SimplePut { path, .. } => {
+                client.put_no_body(path)?;
             }
         }
         Ok(())
@@ -97,8 +102,51 @@ pub fn run_all(client: &Client, org: &str, name: &str, cfg: &RepoConfig) -> Resu
     findings.push(secret_scanning(cfg, &actual_repo));
     findings.push(required_files(client, org, name, cfg)?);
     findings.push(codeowners(client, org, name, cfg)?);
+    findings.push(dependabot_security(client, org, name, cfg)?);
 
     Ok(findings)
+}
+
+fn dependabot_security(client: &Client, org: &str, repo: &str, cfg: &RepoConfig) -> Result<Finding> {
+    let mut f = Finding::new("dependabot_security", Severity::Error, "SI-2, SR-3");
+    let Some(want) = cfg.security.as_ref() else {
+        return Ok(f.skip("no security block configured"));
+    };
+    if want.vulnerability_alerts.is_none()
+        && want.dependabot_security_updates.is_none()
+        && want.dependabot_config != Some(true)
+    {
+        return Ok(f.skip("no dependabot fields configured"));
+    }
+
+    if want.vulnerability_alerts == Some(true) {
+        if !client.vulnerability_alerts_enabled(org, repo)? {
+            f.fail("vulnerability_alerts not enabled");
+            f.actions.push(Action::SimplePut {
+                summary: "enable vulnerability alerts".into(),
+                path: format!("/repos/{org}/{repo}/vulnerability-alerts"),
+            });
+        }
+    }
+
+    if want.dependabot_security_updates == Some(true) {
+        if !client.automated_security_fixes_enabled(org, repo)? {
+            f.fail("dependabot_security_updates not enabled");
+            f.actions.push(Action::SimplePut {
+                summary: "enable Dependabot security updates".into(),
+                path: format!("/repos/{org}/{repo}/automated-security-fixes"),
+            });
+        }
+    }
+
+    if want.dependabot_config == Some(true)
+        && !client.path_exists(org, repo, ".github/dependabot.yml")?
+    {
+        f.fail(".github/dependabot.yml is missing");
+        f.messages.push("no automatic remediation — add config via PR".into());
+    }
+
+    Ok(f)
 }
 
 fn codeowners(client: &Client, org: &str, repo: &str, cfg: &RepoConfig) -> Result<Finding> {
