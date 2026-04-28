@@ -55,21 +55,23 @@ pub struct ActionsSettings {
 pub struct BranchProtection {
     pub branch: String,
     #[serde(default)]
-    pub required_reviews: u32,
+    pub required_reviews: Option<u32>,
     #[serde(default)]
-    pub dismiss_stale_reviews: bool,
+    pub dismiss_stale_reviews: Option<bool>,
     #[serde(default)]
-    pub require_codeowners: bool,
+    pub require_codeowners: Option<bool>,
     #[serde(default)]
-    pub require_conversation_resolution: bool,
+    pub require_conversation_resolution: Option<bool>,
     #[serde(default)]
-    pub require_linear_history: bool,
+    pub require_linear_history: Option<bool>,
     #[serde(default)]
     pub required_status_checks: Vec<String>,
     #[serde(default)]
-    pub block_force_push: bool,
+    pub block_force_push: Option<bool>,
     #[serde(default)]
-    pub block_deletions: bool,
+    pub block_deletions: Option<bool>,
+    #[serde(default)]
+    pub enforce_admins: Option<bool>,
     #[serde(default)]
     pub signed_commits: Option<bool>,
 }
