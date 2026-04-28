@@ -11,6 +11,7 @@ pub enum Action {
     SimplePut { summary: String, path: String },
     SimplePost { summary: String, path: String },
     PutJson { summary: String, path: String, body: Value },
+    ScaffoldDependencyReviewWorkflow { summary: String },
 }
 
 impl Action {
@@ -21,6 +22,7 @@ impl Action {
             Action::SimplePut { summary, .. } => summary,
             Action::SimplePost { summary, .. } => summary,
             Action::PutJson { summary, .. } => summary,
+            Action::ScaffoldDependencyReviewWorkflow { summary } => summary,
         }
     }
 
@@ -41,9 +43,62 @@ impl Action {
             Action::PutJson { path, body, .. } => {
                 client.put_json(path, body)?;
             }
+            Action::ScaffoldDependencyReviewWorkflow { .. } => {
+                scaffold_dependency_review_workflow(client, org, repo)?;
+            }
         }
         Ok(())
     }
+}
+
+fn scaffold_dependency_review_workflow(client: &Client, org: &str, repo: &str) -> Result<()> {
+    let path = ".github/workflows/dependency-review.yml";
+    if client.path_exists(org, repo, path)? {
+        return Err(anyhow::anyhow!(
+            "{path} already exists; refusing to overwrite — \
+             remove or update it manually if it doesn't satisfy the rule"
+        ));
+    }
+    let checkout_sha = client.latest_action_sha("actions", "checkout")?;
+    let dep_review_sha = client.latest_action_sha("actions", "dependency-review-action")?;
+    let content = format!(
+        "name: Dependency Review\n\
+         \n\
+         on:\n\
+         \x20\x20pull_request:\n\
+         \n\
+         permissions:\n\
+         \x20\x20contents: read\n\
+         \n\
+         jobs:\n\
+         \x20\x20dependency-review:\n\
+         \x20\x20\x20\x20runs-on: ubuntu-latest\n\
+         \x20\x20\x20\x20steps:\n\
+         \x20\x20\x20\x20\x20\x20- uses: actions/checkout@{checkout_sha}\n\
+         \x20\x20\x20\x20\x20\x20- uses: actions/dependency-review-action@{dep_review_sha}\n"
+    );
+    client
+        .create_file(
+            org,
+            repo,
+            path,
+            &content,
+            "Add dependency-review workflow (scaffolded by repocat)",
+        )
+        .map_err(|e| {
+            // GitHub returns 404 (not 403) when an OAuth token lacks the `workflow`
+            // scope but tries to write under .github/workflows/. Translate so users
+            // know what to do instead of chasing a misleading 404.
+            if e.to_string().contains("404") {
+                anyhow::anyhow!(
+                    "writing to .github/workflows/ requires the `workflow` OAuth \
+                     scope, which the gh CLI does not request by default. Run \
+                     `gh auth refresh -s workflow` and retry. Underlying error: {e}"
+                )
+            } else {
+                e
+            }
+        })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -199,7 +254,9 @@ fn workflow_yaml(client: &Client, org: &str, repo: &str, cfg: &RepoConfig) -> Re
     if workflow_files.is_empty() {
         if dep_review {
             f.fail("require_dependency_review_action set, but no workflows present");
-            f.messages.push("no automatic remediation — add a dependency-review workflow via PR".into());
+            f.actions.push(Action::ScaffoldDependencyReviewWorkflow {
+                summary: "scaffold .github/workflows/dependency-review.yml".into(),
+            });
             return Ok(f);
         }
         return Ok(f.skip("no .github/workflows/*.yml files"));
@@ -228,9 +285,12 @@ fn workflow_yaml(client: &Client, org: &str, repo: &str, cfg: &RepoConfig) -> Re
 
     if dep_review && !has_dep_review_action {
         f.fail("no workflow uses actions/dependency-review-action");
+        f.actions.push(Action::ScaffoldDependencyReviewWorkflow {
+            summary: "scaffold .github/workflows/dependency-review.yml".into(),
+        });
     }
 
-    if f.status == Status::Fail {
+    if f.status == Status::Fail && f.actions.is_empty() {
         f.messages.push("no automatic remediation — fix workflow files via PR".into());
     }
     Ok(f)
