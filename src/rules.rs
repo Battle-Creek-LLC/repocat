@@ -543,24 +543,30 @@ fn branch_protection(client: &Client, org: &str, repo: &str, cfg: &RepoConfig) -
         }
     }
 
-    if let Some(true) = want.dismiss_stale_reviews {
-        let actual_dismiss = actual
-            .required_pull_request_reviews
-            .as_ref()
-            .and_then(|r| r.dismiss_stale_reviews)
-            .unwrap_or(false);
-        if !actual_dismiss {
-            f.fail("dismiss_stale_reviews not enabled");
+    // dismiss_stale_reviews and require_codeowners are sub-fields of the
+    // required_pull_request_reviews object. If that object doesn't exist on
+    // GitHub (because no reviews are required), there is nothing to enforce —
+    // skip the sub-checks rather than failing with a misleading message.
+    if actual.required_pull_request_reviews.is_some() {
+        if let Some(true) = want.dismiss_stale_reviews {
+            let actual_dismiss = actual
+                .required_pull_request_reviews
+                .as_ref()
+                .and_then(|r| r.dismiss_stale_reviews)
+                .unwrap_or(false);
+            if !actual_dismiss {
+                f.fail("dismiss_stale_reviews not enabled");
+            }
         }
-    }
-    if let Some(true) = want.require_codeowners {
-        let actual_codeowners = actual
-            .required_pull_request_reviews
-            .as_ref()
-            .and_then(|r| r.require_code_owner_reviews)
-            .unwrap_or(false);
-        if !actual_codeowners {
-            f.fail("require_codeowners not enabled");
+        if let Some(true) = want.require_codeowners {
+            let actual_codeowners = actual
+                .required_pull_request_reviews
+                .as_ref()
+                .and_then(|r| r.require_code_owner_reviews)
+                .unwrap_or(false);
+            if !actual_codeowners {
+                f.fail("require_codeowners not enabled");
+            }
         }
     }
 
@@ -706,6 +712,14 @@ fn actual_to_put_body(actual: &Value) -> Value {
         "allow_force_pushes": get_enabled("allow_force_pushes"),
         "allow_deletions": get_enabled("allow_deletions"),
         "required_conversation_resolution": get_enabled("required_conversation_resolution"),
+        // Preserve PUT-accepted toggles that the DSL does not model. Without
+        // these, any apply on a repo that has them on would silently turn them
+        // off. required_signatures is managed by a separate endpoint
+        // (PUT/DELETE /protection/required_signatures) and is intentionally
+        // omitted from this body.
+        "lock_branch":         get_enabled("lock_branch"),
+        "allow_fork_syncing":  get_enabled("allow_fork_syncing"),
+        "block_creations":     get_enabled("block_creations"),
     })
 }
 
@@ -921,7 +935,10 @@ mod tests {
             "required_linear_history": { "enabled": true },
             "allow_force_pushes":      { "enabled": false },
             "allow_deletions":         { "enabled": false },
-            "required_conversation_resolution": { "enabled": true }
+            "required_conversation_resolution": { "enabled": true },
+            "lock_branch":             { "enabled": true },
+            "allow_fork_syncing":      { "enabled": true },
+            "block_creations":         { "enabled": true }
         })
     }
 
@@ -1000,6 +1017,17 @@ mod tests {
         assert!(names.contains(&"ci/test"));
         assert!(names.contains(&"ci/security"));
         assert_eq!(body["required_status_checks"]["strict"], json!(true));
+    }
+
+    #[test]
+    fn unmodeled_toggles_survive_put() {
+        // lock_branch, allow_fork_syncing, block_creations are real PUT fields
+        // the DSL doesn't expose. They must survive an apply unchanged.
+        let want = want_minimal("main");
+        let body = branch_protection_body(&want, Some(&realistic_actual()));
+        assert_eq!(body["lock_branch"], json!(true));
+        assert_eq!(body["allow_fork_syncing"], json!(true));
+        assert_eq!(body["block_creations"], json!(true));
     }
 
     #[test]
