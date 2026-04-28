@@ -9,6 +9,7 @@ pub enum Action {
     PatchRepo { summary: String, body: Value },
     PutBranchProtection { summary: String, branch: String, body: Value },
     SimplePut { summary: String, path: String },
+    SimplePost { summary: String, path: String },
     PutJson { summary: String, path: String, body: Value },
 }
 
@@ -18,6 +19,7 @@ impl Action {
             Action::PatchRepo { summary, .. } => summary,
             Action::PutBranchProtection { summary, .. } => summary,
             Action::SimplePut { summary, .. } => summary,
+            Action::SimplePost { summary, .. } => summary,
             Action::PutJson { summary, .. } => summary,
         }
     }
@@ -32,6 +34,9 @@ impl Action {
             }
             Action::SimplePut { path, .. } => {
                 client.put_no_body(path)?;
+            }
+            Action::SimplePost { path, .. } => {
+                client.post_no_body(path)?;
             }
             Action::PutJson { path, body, .. } => {
                 client.put_json(path, body)?;
@@ -110,8 +115,27 @@ pub fn run_all(client: &Client, org: &str, name: &str, cfg: &RepoConfig) -> Resu
     findings.push(dependabot_security(client, org, name, cfg)?);
     findings.push(workflow_permissions(client, org, name, cfg)?);
     findings.push(workflow_yaml(client, org, name, cfg)?);
+    findings.push(signed_commits(client, org, name, cfg)?);
 
     Ok(findings)
+}
+
+fn signed_commits(client: &Client, org: &str, repo: &str, cfg: &RepoConfig) -> Result<Finding> {
+    let mut f = Finding::new("signed_commits", Severity::Warning, "SI-7");
+    let Some(want) = cfg.branch_protection.as_ref() else {
+        return Ok(f.skip("no branch_protection block configured"));
+    };
+    if want.signed_commits != Some(true) {
+        return Ok(f.skip("signed_commits not required"));
+    }
+    if !client.required_signatures_enabled(org, repo, &want.branch)? {
+        f.fail(format!("signed commits not enforced on `{}`", want.branch));
+        f.actions.push(Action::SimplePost {
+            summary: format!("require signed commits on `{}`", want.branch),
+            path: format!("/repos/{org}/{repo}/branches/{}/protection/required_signatures", want.branch),
+        });
+    }
+    Ok(f)
 }
 
 fn workflow_yaml(client: &Client, org: &str, repo: &str, cfg: &RepoConfig) -> Result<Finding> {

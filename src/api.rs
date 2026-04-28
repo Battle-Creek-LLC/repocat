@@ -95,6 +95,32 @@ impl Client {
         Ok(self.get(&path)?.into_json()?)
     }
 
+    pub fn required_signatures_enabled(&self, org: &str, repo: &str, branch: &str) -> Result<bool> {
+        let path = format!("/repos/{org}/{repo}/branches/{branch}/protection/required_signatures");
+        let Some(resp) = self.get_optional(&path)? else { return Ok(false); };
+        let payload: RequiredSignatures = resp.into_json()?;
+        Ok(payload.enabled)
+    }
+
+    pub fn post_no_body(&self, path: &str) -> Result<()> {
+        let url = format!("https://api.github.com{path}");
+        ureq::post(&url)
+            .set("Authorization", &format!("Bearer {}", self.token))
+            .set("Accept", "application/vnd.github+json")
+            .set("X-GitHub-Api-Version", "2022-11-28")
+            .set("User-Agent", user_agent())
+            .set("Content-Length", "0")
+            .call()
+            .map_err(|e| match e {
+                ureq::Error::Status(code, r) => {
+                    let body = r.into_string().unwrap_or_default();
+                    anyhow!("POST {url} → {code}: {body}")
+                }
+                other => anyhow!("transport error on POST {url}: {other}"),
+            })?;
+        Ok(())
+    }
+
     pub fn put_no_body(&self, path: &str) -> Result<()> {
         let url = format!("https://api.github.com{path}");
         ureq::put(&url)
@@ -194,6 +220,11 @@ pub struct DirEntry {
     pub path: String,
     #[serde(rename = "type")]
     pub kind: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct RequiredSignatures {
+    enabled: bool,
 }
 
 #[derive(Debug, Deserialize)]

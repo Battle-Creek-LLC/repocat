@@ -61,6 +61,8 @@ pub struct BranchProtection {
     pub block_force_push: bool,
     #[serde(default)]
     pub block_deletions: bool,
+    #[serde(default)]
+    pub signed_commits: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
