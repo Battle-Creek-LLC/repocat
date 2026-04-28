@@ -1,12 +1,14 @@
 mod api;
 mod auth;
 mod config;
+mod output;
 mod rules;
 
 use anyhow::{anyhow, Result};
 use std::{path::PathBuf, process::ExitCode};
 
 use crate::config::Config;
+use crate::output::Format;
 use crate::rules::{Finding, Severity, Status};
 
 const DEFAULT_CONFIG: &str = ".repo.yml";
@@ -54,7 +56,7 @@ fn main() -> ExitCode {
 fn print_usage() {
     eprintln!(
         "usage:\n  \
-         repocat audit [<repo>...] [--config <path>] [--all]\n  \
+         repocat audit [<repo>...] [--config <path>] [--all] [--format text|json|sarif]\n  \
          repocat diff  [<repo>...] [--config <path>] [--all]\n  \
          repocat apply [<repo>...] [--config <path>] [--all] [--dry-run]\n  \
          repocat version"
@@ -66,6 +68,7 @@ struct Args {
     filter_repos: Vec<String>,
     all: bool,
     dry_run: bool,
+    format: Format,
 }
 
 fn parse_args(args: &[String]) -> Result<Args> {
@@ -74,6 +77,7 @@ fn parse_args(args: &[String]) -> Result<Args> {
         filter_repos: Vec::new(),
         all: false,
         dry_run: false,
+        format: Format::Text,
     };
     let mut i = 0;
     while i < args.len() {
@@ -86,6 +90,11 @@ fn parse_args(args: &[String]) -> Result<Args> {
             }
             "--all" => out.all = true,
             "--dry-run" => out.dry_run = true,
+            "--format" => {
+                i += 1;
+                let v = args.get(i).ok_or_else(|| anyhow!("--format needs a value"))?;
+                out.format = output::parse_format(v)?;
+            }
             other if !other.starts_with("--") => out.filter_repos.push(other.to_string()),
             other => return Err(anyhow!("unknown flag: {other}")),
         }
@@ -114,6 +123,11 @@ fn run(mode: Mode, raw_args: &[String]) -> Result<ExitCode> {
     let args = parse_args(raw_args)?;
     let effective_mode = if mode == Mode::Apply && args.dry_run { Mode::Diff } else { mode };
 
+    if args.format != Format::Text && effective_mode != Mode::Audit {
+        return Err(anyhow!("--format is only supported with `audit`"));
+    }
+    let defer_rendering = args.format != Format::Text;
+
     let cfg = config::load(&args.config_path)?;
     let (token, login) = auth::load_credentials()?;
     eprintln!("authenticated as {login}");
@@ -125,26 +139,40 @@ fn run(mode: Mode, raw_args: &[String]) -> Result<ExitCode> {
 
     let mut any_error = false;
     let mut any_apply_error = false;
+    let mut all_findings: Vec<(String, Vec<Finding>)> = Vec::new();
 
     for name in target_repos(&cfg, &args)? {
         let repo_cfg = &cfg.repos[name];
         eprintln!("\n=== {}/{name} ===", cfg.org);
         let findings = rules::run_all(&client, &cfg.org, name, repo_cfg)?;
-        render_table(&findings);
 
         if findings.iter().any(|f| f.status == Status::Fail && f.severity == Severity::Error) {
             any_error = true;
         }
 
-        match effective_mode {
-            Mode::Audit => {}
-            Mode::Diff => render_actions(&findings),
-            Mode::Apply => {
-                if !execute_actions(&client, &cfg.org, name, &findings) {
-                    any_apply_error = true;
+        if !defer_rendering {
+            render_table(&findings);
+            match effective_mode {
+                Mode::Audit => {}
+                Mode::Diff => render_actions(&findings),
+                Mode::Apply => {
+                    if !execute_actions(&client, &cfg.org, name, &findings) {
+                        any_apply_error = true;
+                    }
                 }
             }
         }
+
+        all_findings.push((name.clone(), findings));
+    }
+
+    if defer_rendering {
+        let rendered = match args.format {
+            Format::Json => output::render_json(&cfg.org, &all_findings)?,
+            Format::Sarif => output::render_sarif(&cfg.org, &all_findings)?,
+            Format::Text => unreachable!("text doesn't defer"),
+        };
+        println!("{rendered}");
     }
 
     let code = match effective_mode {

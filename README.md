@@ -21,10 +21,12 @@ Early development. `audit`, `diff`, and `apply` work for these rules:
 ## Usage
 
 ```sh
-repocat audit             # report drift, exit 1 on error-severity failures
-repocat diff              # preview changes apply would make
-repocat apply             # reconcile to .repo.yml
-repocat apply --dry-run   # same as `diff`
+repocat audit                       # report drift, exit 1 on error-severity failures
+repocat audit --format json         # structured findings for downstream tooling
+repocat audit --format sarif        # SARIF 2.1.0 for GitHub Code Scanning upload
+repocat diff                        # preview changes apply would make
+repocat apply                       # reconcile to .repo.yml
+repocat apply --dry-run             # same as `diff`
 ```
 
 Credentials are resolved from `GH_TOKEN`/`GITHUB_TOKEN`, then the macOS
