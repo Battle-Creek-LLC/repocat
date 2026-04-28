@@ -520,120 +520,317 @@ fn branch_protection(client: &Client, org: &str, repo: &str, cfg: &RepoConfig) -
     let Some(want) = cfg.branch_protection.as_ref() else {
         return Ok(f.skip("no branch_protection block configured"));
     };
-    let actual: Option<ActualBp> = client.get_branch_protection(org, repo, &want.branch)?;
-    let Some(actual) = actual else {
+    let actual_raw: Option<Value> = client.get_branch_protection(org, repo, &want.branch)?;
+    let Some(actual_raw) = actual_raw else {
         f.fail(format!("branch `{}` has no protection rule", want.branch));
         f.actions.push(Action::PutBranchProtection {
             summary: format!("create branch protection on `{}`", want.branch),
             branch: want.branch.clone(),
-            body: branch_protection_body(want),
+            body: branch_protection_body(want, None),
         });
         return Ok(f);
     };
+    let actual: ActualBp = serde_json::from_value(actual_raw.clone())?;
 
     let actual_reviews = actual
         .required_pull_request_reviews
         .as_ref()
         .and_then(|r| r.required_approving_review_count)
         .unwrap_or(0);
-    if actual_reviews != want.required_reviews {
-        f.fail(format!(
-            "required_reviews: want {}, got {actual_reviews}",
-            want.required_reviews
-        ));
-    }
-
-    if want.required_reviews > 0 {
-        let actual_dismiss = actual
-            .required_pull_request_reviews
-            .as_ref()
-            .and_then(|r| r.dismiss_stale_reviews)
-            .unwrap_or(false);
-        if want.dismiss_stale_reviews && !actual_dismiss {
-            f.fail("dismiss_stale_reviews not enabled");
-        }
-        let actual_codeowners = actual
-            .required_pull_request_reviews
-            .as_ref()
-            .and_then(|r| r.require_code_owner_reviews)
-            .unwrap_or(false);
-        if want.require_codeowners && !actual_codeowners {
-            f.fail("require_codeowners not enabled");
+    if let Some(want_reviews) = want.required_reviews {
+        if actual_reviews != want_reviews {
+            f.fail(format!("required_reviews: want {want_reviews}, got {actual_reviews}"));
         }
     }
 
-    let actual_linear = actual.required_linear_history.as_ref().is_some_and(|e| e.enabled);
-    if want.require_linear_history && !actual_linear {
-        f.fail("require_linear_history not enabled");
+    // dismiss_stale_reviews and require_codeowners are sub-fields of the
+    // required_pull_request_reviews object. If that object doesn't exist on
+    // GitHub (because no reviews are required), there is nothing to enforce —
+    // skip the sub-checks rather than failing with a misleading message.
+    if actual.required_pull_request_reviews.is_some() {
+        if let Some(true) = want.dismiss_stale_reviews {
+            let actual_dismiss = actual
+                .required_pull_request_reviews
+                .as_ref()
+                .and_then(|r| r.dismiss_stale_reviews)
+                .unwrap_or(false);
+            if !actual_dismiss {
+                f.fail("dismiss_stale_reviews not enabled");
+            }
+        }
+        if let Some(true) = want.require_codeowners {
+            let actual_codeowners = actual
+                .required_pull_request_reviews
+                .as_ref()
+                .and_then(|r| r.require_code_owner_reviews)
+                .unwrap_or(false);
+            if !actual_codeowners {
+                f.fail("require_codeowners not enabled");
+            }
+        }
     }
 
-    let actual_convo = actual.required_conversation_resolution.as_ref().is_some_and(|e| e.enabled);
-    if want.require_conversation_resolution && !actual_convo {
-        f.fail("require_conversation_resolution not enabled");
+    if let Some(true) = want.require_linear_history {
+        let actual_linear = actual.required_linear_history.as_ref().is_some_and(|e| e.enabled);
+        if !actual_linear {
+            f.fail("require_linear_history not enabled");
+        }
     }
 
-    let actual_force = actual.allow_force_pushes.as_ref().is_some_and(|e| e.enabled);
-    if want.block_force_push && actual_force {
-        f.fail("force pushes are allowed (want blocked)");
+    if let Some(true) = want.require_conversation_resolution {
+        let actual_convo = actual.required_conversation_resolution.as_ref().is_some_and(|e| e.enabled);
+        if !actual_convo {
+            f.fail("require_conversation_resolution not enabled");
+        }
     }
 
-    let actual_delete = actual.allow_deletions.as_ref().is_some_and(|e| e.enabled);
-    if want.block_deletions && actual_delete {
-        f.fail("branch deletions are allowed (want blocked)");
+    if let Some(true) = want.block_force_push {
+        let actual_force = actual.allow_force_pushes.as_ref().is_some_and(|e| e.enabled);
+        if actual_force {
+            f.fail("force pushes are allowed (want blocked)");
+        }
     }
 
-    let actual_checks: Vec<String> = actual
-        .required_status_checks
-        .map(|c| c.contexts)
-        .unwrap_or_default();
-    let missing: Vec<&String> = want
-        .required_status_checks
-        .iter()
-        .filter(|c| !actual_checks.contains(c))
-        .collect();
-    if !missing.is_empty() {
-        f.fail(format!(
-            "missing required status checks: {}",
-            missing.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")
-        ));
+    if let Some(true) = want.block_deletions {
+        let actual_delete = actual.allow_deletions.as_ref().is_some_and(|e| e.enabled);
+        if actual_delete {
+            f.fail("branch deletions are allowed (want blocked)");
+        }
+    }
+
+    if let Some(want_admins) = want.enforce_admins {
+        let actual_admins = actual_raw
+            .get("enforce_admins")
+            .and_then(|v| v.get("enabled"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        if want_admins != actual_admins {
+            f.fail(format!("enforce_admins: want {want_admins}, got {actual_admins}"));
+        }
+    }
+
+    if !want.required_status_checks.is_empty() {
+        let actual_checks: Vec<String> = actual
+            .required_status_checks
+            .map(|c| c.contexts)
+            .unwrap_or_default();
+        let missing: Vec<&String> = want
+            .required_status_checks
+            .iter()
+            .filter(|c| !actual_checks.contains(c))
+            .collect();
+        if !missing.is_empty() {
+            f.fail(format!(
+                "missing required status checks: {}",
+                missing.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")
+            ));
+        }
     }
 
     if f.status == Status::Fail {
         f.actions.push(Action::PutBranchProtection {
             summary: format!("reconcile branch protection on `{}`", want.branch),
             branch: want.branch.clone(),
-            body: branch_protection_body(want),
+            body: branch_protection_body(want, Some(&actual_raw)),
         });
     }
 
     Ok(f)
 }
 
-fn branch_protection_body(want: &DesiredBp) -> Value {
-    let pr_reviews = if want.required_reviews > 0 {
-        json!({
-            "required_approving_review_count": want.required_reviews,
-            "dismiss_stale_reviews": want.dismiss_stale_reviews,
-            "require_code_owner_reviews": want.require_codeowners,
-        })
-    } else {
-        Value::Null
+// GitHub's PUT /branches/{branch}/protection replaces the whole object — any
+// field omitted (or null) is reset. To avoid clobbering settings the user did
+// not declare in .repo.yml, start from the GET response and overlay only the
+// fields the user explicitly set. When no protection rule exists yet, build a
+// minimal body with conservative defaults.
+fn branch_protection_body(want: &DesiredBp, actual: Option<&Value>) -> Value {
+    let mut body = match actual {
+        Some(a) => actual_to_put_body(a),
+        None => json!({
+            "required_status_checks": Value::Null,
+            "enforce_admins": Value::Null,
+            "required_pull_request_reviews": Value::Null,
+            "restrictions": Value::Null,
+            "required_linear_history": false,
+            "allow_force_pushes": false,
+            "allow_deletions": false,
+            "required_conversation_resolution": false,
+        }),
     };
-    let status_checks = if want.required_status_checks.is_empty() {
-        Value::Null
-    } else {
-        json!({ "strict": false, "contexts": want.required_status_checks })
+    let map = body.as_object_mut().expect("body is an object");
+
+    if let Some(v) = want.require_linear_history {
+        map.insert("required_linear_history".into(), Value::Bool(v));
+    }
+    if let Some(v) = want.block_force_push {
+        map.insert("allow_force_pushes".into(), Value::Bool(!v));
+    }
+    if let Some(v) = want.block_deletions {
+        map.insert("allow_deletions".into(), Value::Bool(!v));
+    }
+    if let Some(v) = want.require_conversation_resolution {
+        map.insert("required_conversation_resolution".into(), Value::Bool(v));
+    }
+    if let Some(v) = want.enforce_admins {
+        map.insert("enforce_admins".into(), Value::Bool(v));
+    }
+
+    overlay_pr_reviews(map, want);
+    overlay_status_checks(map, want);
+
+    body
+}
+
+// The GET response for branch protection is shaped differently than the PUT
+// body. Convert the relevant fields so we have a starting point we can overlay.
+// Anything we do not explicitly handle is dropped — but only after we have
+// preserved the fields GitHub's PUT cares about.
+fn actual_to_put_body(actual: &Value) -> Value {
+    let get_enabled = |key: &str| -> bool {
+        actual.get(key)
+            .and_then(|v| v.get("enabled"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
     };
+
+    let pr_reviews = actual.get("required_pull_request_reviews").cloned()
+        .map(pr_reviews_to_put_body)
+        .unwrap_or(Value::Null);
+    let status_checks = actual.get("required_status_checks").cloned()
+        .map(strip_status_checks_url)
+        .unwrap_or(Value::Null);
+    let restrictions = actual.get("restrictions").cloned()
+        .map(strip_restrictions_for_put)
+        .unwrap_or(Value::Null);
+
     json!({
         "required_status_checks": status_checks,
-        "enforce_admins": Value::Null,
+        "enforce_admins": get_enabled("enforce_admins"),
         "required_pull_request_reviews": pr_reviews,
-        "restrictions": Value::Null,
-        "required_linear_history": want.require_linear_history,
-        "allow_force_pushes": !want.block_force_push,
-        "allow_deletions": !want.block_deletions,
-        "required_conversation_resolution": want.require_conversation_resolution,
+        "restrictions": restrictions,
+        "required_linear_history": get_enabled("required_linear_history"),
+        "allow_force_pushes": get_enabled("allow_force_pushes"),
+        "allow_deletions": get_enabled("allow_deletions"),
+        "required_conversation_resolution": get_enabled("required_conversation_resolution"),
+        // Preserve PUT-accepted toggles that the DSL does not model. Without
+        // these, any apply on a repo that has them on would silently turn them
+        // off. required_signatures is managed by a separate endpoint
+        // (PUT/DELETE /protection/required_signatures) and is intentionally
+        // omitted from this body.
+        "lock_branch":         get_enabled("lock_branch"),
+        "allow_fork_syncing":  get_enabled("allow_fork_syncing"),
+        "block_creations":     get_enabled("block_creations"),
     })
+}
+
+// PUT body for required_pull_request_reviews drops the URL and shape-transforms
+// dismissal_restrictions and bypass_pull_request_allowances — both are nested
+// actor sets whose GET shape (objects with login/slug/id/url) is rejected by
+// the PUT endpoint, which expects bare-string arrays.
+fn pr_reviews_to_put_body(mut v: Value) -> Value {
+    let Some(obj) = v.as_object_mut() else { return v };
+    obj.remove("url");
+    if let Some(dr) = obj.get("dismissal_restrictions").cloned() {
+        obj.insert("dismissal_restrictions".into(), to_put_actor_set(&dr, &["users", "teams"]));
+    }
+    if let Some(bp) = obj.get("bypass_pull_request_allowances").cloned() {
+        obj.insert(
+            "bypass_pull_request_allowances".into(),
+            to_put_actor_set(&bp, &["users", "teams", "apps"]),
+        );
+    }
+    v
+}
+
+fn strip_status_checks_url(mut v: Value) -> Value {
+    if let Some(obj) = v.as_object_mut() {
+        obj.remove("url");
+        obj.remove("contexts_url");
+    }
+    v
+}
+
+// Convert a GET-shape actor set ({ users: [{login, ...}], teams: [{slug, ...}], ... })
+// to the PUT-shape ({ users: ["login"], teams: ["slug"], ... }). `kinds` lets
+// callers opt out of fields the endpoint doesn't accept (dismissal_restrictions
+// has no `apps`, restrictions and bypass_pull_request_allowances do).
+fn to_put_actor_set(v: &Value, kinds: &[&str]) -> Value {
+    let Some(obj) = v.as_object() else { return Value::Null };
+    let mut out = serde_json::Map::new();
+    for kind in kinds {
+        let name_field = if *kind == "users" { "login" } else { "slug" };
+        let names: Vec<Value> = obj
+            .get(*kind)
+            .and_then(|v| v.as_array())
+            .map(|a| a.iter()
+                .filter_map(|e| e.get(name_field).and_then(|s| s.as_str()))
+                .map(|s| Value::String(s.into()))
+                .collect())
+            .unwrap_or_default();
+        out.insert((*kind).into(), Value::Array(names));
+    }
+    Value::Object(out)
+}
+
+fn strip_restrictions_for_put(v: Value) -> Value {
+    if !v.is_object() {
+        return Value::Null;
+    }
+    to_put_actor_set(&v, &["users", "teams", "apps"])
+}
+
+fn overlay_pr_reviews(map: &mut serde_json::Map<String, Value>, want: &DesiredBp) {
+    let touches_pr = want.required_reviews.is_some()
+        || want.dismiss_stale_reviews.is_some()
+        || want.require_codeowners.is_some();
+    if !touches_pr {
+        return;
+    }
+    let mut pr = map.get("required_pull_request_reviews")
+        .cloned()
+        .filter(|v| v.is_object())
+        .unwrap_or_else(|| json!({}));
+    let pr_obj = pr.as_object_mut().expect("pr is an object");
+    if let Some(n) = want.required_reviews {
+        pr_obj.insert("required_approving_review_count".into(), json!(n));
+    }
+    if let Some(b) = want.dismiss_stale_reviews {
+        pr_obj.insert("dismiss_stale_reviews".into(), Value::Bool(b));
+    }
+    if let Some(b) = want.require_codeowners {
+        pr_obj.insert("require_code_owner_reviews".into(), Value::Bool(b));
+    }
+    // GitHub rejects a non-null required_pull_request_reviews block that lacks
+    // required_approving_review_count. If the user declared sub-fields without
+    // a count and the actual state had no block to inherit one from, drop the
+    // overlay rather than emit a body the API will 422 on.
+    if !pr_obj.contains_key("required_approving_review_count") {
+        return;
+    }
+    map.insert("required_pull_request_reviews".into(), pr);
+}
+
+fn overlay_status_checks(map: &mut serde_json::Map<String, Value>, want: &DesiredBp) {
+    if want.required_status_checks.is_empty() {
+        return;
+    }
+    let mut sc = map.get("required_status_checks")
+        .cloned()
+        .filter(|v| v.is_object())
+        .unwrap_or_else(|| json!({ "strict": false, "contexts": [] }));
+    let sc_obj = sc.as_object_mut().expect("sc is an object");
+    let existing: Vec<String> = sc_obj.get("contexts")
+        .and_then(|v| v.as_array())
+        .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .unwrap_or_default();
+    let mut merged = existing;
+    for c in &want.required_status_checks {
+        if !merged.contains(c) {
+            merged.push(c.clone());
+        }
+    }
+    sc_obj.insert("contexts".into(), json!(merged));
+    map.insert("required_status_checks".into(), sc);
 }
 
 fn merge_settings(cfg: &RepoConfig, actual: &ActualRepo) -> Finding {
@@ -704,5 +901,223 @@ fn check_and_patch(
     if want != actual {
         f.fail(format!("{display_key}: want {want}, got {actual}"));
         body.insert(api_key.into(), Value::Bool(want));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn want_minimal(branch: &str) -> DesiredBp {
+        DesiredBp {
+            branch: branch.into(),
+            required_reviews: None,
+            dismiss_stale_reviews: None,
+            require_codeowners: None,
+            require_conversation_resolution: None,
+            require_linear_history: None,
+            required_status_checks: vec![],
+            block_force_push: None,
+            block_deletions: None,
+            enforce_admins: None,
+            signed_commits: None,
+        }
+    }
+
+    // Realistic GET response: every field GitHub returns for a heavily-protected
+    // branch. The point of these tests is that any field we don't model must
+    // still survive a PUT, and any field the user didn't declare must be
+    // inherited from this actual state.
+    fn realistic_actual() -> Value {
+        json!({
+            "url": "https://api.github.com/repos/o/r/branches/main/protection",
+            "required_pull_request_reviews": {
+                "url": "https://api.github.com/.../required_pull_request_reviews",
+                "required_approving_review_count": 3,
+                "dismiss_stale_reviews": true,
+                "require_code_owner_reviews": true,
+                "require_last_push_approval": true,
+                "dismissal_restrictions": {
+                    "url": "https://api.github.com/.../dismissal_restrictions",
+                    "users_url": "https://api.github.com/.../users",
+                    "teams_url": "https://api.github.com/.../teams",
+                    "users": [{"login": "alice", "id": 1}],
+                    "teams": [{"slug": "platform", "id": 2}]
+                },
+                "bypass_pull_request_allowances": {
+                    "users": [{"login": "ops-bot", "id": 7}],
+                    "teams": [{"slug": "release", "id": 8}],
+                    "apps":  [{"slug": "deploy-bot", "id": 9}]
+                }
+            },
+            "required_status_checks": {
+                "url": "https://api.github.com/.../required_status_checks",
+                "contexts_url": "https://api.github.com/.../contexts",
+                "strict": true,
+                "contexts": ["ci/build", "ci/test"]
+            },
+            "enforce_admins": { "enabled": true, "url": "..." },
+            "restrictions": {
+                "users": [{"login": "alice", "id": 1}],
+                "teams": [{"slug": "platform", "id": 2}],
+                "apps":  [{"slug": "deploy-bot", "id": 3}]
+            },
+            "required_linear_history": { "enabled": true },
+            "allow_force_pushes":      { "enabled": false },
+            "allow_deletions":         { "enabled": false },
+            "required_conversation_resolution": { "enabled": true },
+            "lock_branch":             { "enabled": true },
+            "allow_fork_syncing":      { "enabled": true },
+            "block_creations":         { "enabled": true }
+        })
+    }
+
+    #[test]
+    fn empty_want_with_actual_preserves_everything() {
+        let want = want_minimal("main");
+        let actual = realistic_actual();
+        let body = branch_protection_body(&want, Some(&actual));
+
+        assert_eq!(body["enforce_admins"], json!(true), "admin enforcement must survive");
+        assert_eq!(body["required_linear_history"], json!(true));
+        assert_eq!(body["required_conversation_resolution"], json!(true));
+        assert_eq!(body["allow_force_pushes"], json!(false));
+        assert_eq!(body["allow_deletions"], json!(false));
+
+        let pr = &body["required_pull_request_reviews"];
+        assert_eq!(pr["required_approving_review_count"], json!(3));
+        assert_eq!(pr["dismiss_stale_reviews"], json!(true));
+        assert_eq!(pr["require_code_owner_reviews"], json!(true));
+        // unmodeled fields preserved
+        assert_eq!(pr["require_last_push_approval"], json!(true));
+        assert!(pr["bypass_pull_request_allowances"].is_object());
+
+        let sc = &body["required_status_checks"];
+        assert_eq!(sc["strict"], json!(true), "strict must not be flipped to false");
+        assert_eq!(sc["contexts"], json!(["ci/build", "ci/test"]));
+
+        let r = &body["restrictions"];
+        assert_eq!(r["users"], json!(["alice"]));
+        assert_eq!(r["teams"], json!(["platform"]));
+        assert_eq!(r["apps"], json!(["deploy-bot"]));
+    }
+
+    #[test]
+    fn declaring_one_field_does_not_clobber_others() {
+        let mut want = want_minimal("main");
+        want.required_reviews = Some(2);
+        let actual = realistic_actual();
+        let body = branch_protection_body(&want, Some(&actual));
+
+        assert_eq!(body["required_pull_request_reviews"]["required_approving_review_count"], json!(2));
+        // sibling PR fields the user did not touch are preserved
+        assert_eq!(body["required_pull_request_reviews"]["require_code_owner_reviews"], json!(true));
+        assert_eq!(body["required_pull_request_reviews"]["require_last_push_approval"], json!(true));
+        // unrelated top-level fields preserved
+        assert_eq!(body["enforce_admins"], json!(true));
+        assert_eq!(body["required_status_checks"]["strict"], json!(true));
+    }
+
+    #[test]
+    fn block_false_means_allow_true() {
+        let mut want = want_minimal("main");
+        want.block_force_push = Some(false);
+        want.block_deletions = Some(true);
+        let body = branch_protection_body(&want, Some(&realistic_actual()));
+        assert_eq!(body["allow_force_pushes"], json!(true));
+        assert_eq!(body["allow_deletions"], json!(false));
+    }
+
+    #[test]
+    fn enforce_admins_can_be_explicitly_disabled() {
+        let mut want = want_minimal("main");
+        want.enforce_admins = Some(false);
+        let body = branch_protection_body(&want, Some(&realistic_actual()));
+        assert_eq!(body["enforce_admins"], json!(false));
+    }
+
+    #[test]
+    fn status_checks_merge_additively() {
+        let mut want = want_minimal("main");
+        want.required_status_checks = vec!["ci/security".into(), "ci/build".into()];
+        let body = branch_protection_body(&want, Some(&realistic_actual()));
+        let contexts = body["required_status_checks"]["contexts"].as_array().unwrap();
+        let names: Vec<&str> = contexts.iter().filter_map(|v| v.as_str()).collect();
+        assert!(names.contains(&"ci/build"));
+        assert!(names.contains(&"ci/test"));
+        assert!(names.contains(&"ci/security"));
+        assert_eq!(body["required_status_checks"]["strict"], json!(true));
+    }
+
+    #[test]
+    fn unmodeled_toggles_survive_put() {
+        // lock_branch, allow_fork_syncing, block_creations are real PUT fields
+        // the DSL doesn't expose. They must survive an apply unchanged.
+        let want = want_minimal("main");
+        let body = branch_protection_body(&want, Some(&realistic_actual()));
+        assert_eq!(body["lock_branch"], json!(true));
+        assert_eq!(body["allow_fork_syncing"], json!(true));
+        assert_eq!(body["block_creations"], json!(true));
+    }
+
+    #[test]
+    fn dismissal_restrictions_become_put_shape() {
+        let want = want_minimal("main");
+        let body = branch_protection_body(&want, Some(&realistic_actual()));
+        let dr = &body["required_pull_request_reviews"]["dismissal_restrictions"];
+        assert_eq!(dr["users"], json!(["alice"]), "users must be string array, not user objects");
+        assert_eq!(dr["teams"], json!(["platform"]));
+        assert!(dr.get("url").is_none(), "URL fields must be stripped");
+        assert!(dr.get("users_url").is_none());
+        assert!(dr.get("teams_url").is_none());
+    }
+
+    #[test]
+    fn bypass_allowances_become_put_shape() {
+        let want = want_minimal("main");
+        let body = branch_protection_body(&want, Some(&realistic_actual()));
+        let bp = &body["required_pull_request_reviews"]["bypass_pull_request_allowances"];
+        assert_eq!(bp["users"], json!(["ops-bot"]));
+        assert_eq!(bp["teams"], json!(["release"]));
+        assert_eq!(bp["apps"], json!(["deploy-bot"]));
+    }
+
+    #[test]
+    fn pr_subfield_without_count_is_dropped() {
+        // User declares dismiss_stale_reviews but never required_reviews, and
+        // there's no actual PR-review block to inherit a count from. We must
+        // not emit a malformed PR-review block — drop it entirely.
+        let mut want = want_minimal("main");
+        want.dismiss_stale_reviews = Some(true);
+        let body = branch_protection_body(&want, None);
+        assert_eq!(
+            body["required_pull_request_reviews"], Value::Null,
+            "should not emit PR block without required_approving_review_count"
+        );
+    }
+
+    #[test]
+    fn pr_subfield_with_inherited_count_is_kept() {
+        // Same shape as above but actual already has a PR-review block with a
+        // count — the count is inherited, so the overlay is well-formed.
+        let mut want = want_minimal("main");
+        want.dismiss_stale_reviews = Some(false);
+        let body = branch_protection_body(&want, Some(&realistic_actual()));
+        let pr = &body["required_pull_request_reviews"];
+        assert_eq!(pr["dismiss_stale_reviews"], json!(false), "user override applied");
+        assert_eq!(pr["required_approving_review_count"], json!(3), "count inherited from actual");
+    }
+
+    #[test]
+    fn no_actual_uses_conservative_defaults() {
+        let mut want = want_minimal("main");
+        want.required_reviews = Some(1);
+        want.enforce_admins = Some(true);
+        let body = branch_protection_body(&want, None);
+        assert_eq!(body["enforce_admins"], json!(true));
+        assert_eq!(body["required_pull_request_reviews"]["required_approving_review_count"], json!(1));
+        assert_eq!(body["allow_force_pushes"], json!(false));
+        assert_eq!(body["allow_deletions"], json!(false));
+        assert_eq!(body["restrictions"], Value::Null);
     }
 }

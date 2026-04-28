@@ -259,7 +259,7 @@ impl Client {
         org: &str,
         repo: &str,
         branch: &str,
-    ) -> Result<Option<BranchProtection>> {
+    ) -> Result<Option<serde_json::Value>> {
         let path = format!("/repos/{org}/{repo}/branches/{branch}/protection");
         let Some(resp) = self.get_optional(&path)? else { return Ok(None); };
         Ok(Some(resp.into_json()?))
