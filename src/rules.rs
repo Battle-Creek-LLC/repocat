@@ -1,0 +1,292 @@
+use crate::api::{BranchProtection as ActualBp, Client, Repo as ActualRepo};
+use crate::config::{BranchProtection as DesiredBp, RepoConfig};
+use anyhow::Result;
+use serde_json::{json, Value};
+use std::fmt;
+
+#[derive(Debug)]
+pub enum Action {
+    PatchRepo { summary: String, body: Value },
+    PutBranchProtection { summary: String, branch: String, body: Value },
+}
+
+impl Action {
+    pub fn summary(&self) -> &str {
+        match self {
+            Action::PatchRepo { summary, .. } => summary,
+            Action::PutBranchProtection { summary, .. } => summary,
+        }
+    }
+
+    pub fn execute(&self, client: &Client, org: &str, repo: &str) -> Result<()> {
+        match self {
+            Action::PatchRepo { body, .. } => {
+                client.patch_repo(org, repo, body)?;
+            }
+            Action::PutBranchProtection { branch, body, .. } => {
+                client.put_branch_protection(org, repo, branch, body)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Severity {
+    Error,
+    Warning,
+}
+
+impl fmt::Display for Severity {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Severity::Error => "error",
+            Severity::Warning => "warning",
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Status {
+    Pass,
+    Fail,
+    Skip,
+}
+
+impl fmt::Display for Status {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Status::Pass => "pass",
+            Status::Fail => "fail",
+            Status::Skip => "skip",
+        })
+    }
+}
+
+#[derive(Debug)]
+pub struct Finding {
+    pub rule: &'static str,
+    pub severity: Severity,
+    pub nist: &'static str,
+    pub status: Status,
+    pub messages: Vec<String>,
+    pub actions: Vec<Action>,
+}
+
+impl Finding {
+    fn new(rule: &'static str, severity: Severity, nist: &'static str) -> Self {
+        Self { rule, severity, nist, status: Status::Pass, messages: Vec::new(), actions: Vec::new() }
+    }
+    fn fail(&mut self, msg: impl Into<String>) {
+        self.status = Status::Fail;
+        self.messages.push(msg.into());
+    }
+    fn skip(mut self, msg: impl Into<String>) -> Self {
+        self.status = Status::Skip;
+        self.messages.push(msg.into());
+        self
+    }
+}
+
+pub fn run_all(client: &Client, org: &str, name: &str, cfg: &RepoConfig) -> Result<Vec<Finding>> {
+    let actual_repo = client.get_repo(org, name)?;
+    let mut findings = Vec::new();
+
+    findings.push(branch_protection(client, org, name, cfg)?);
+    findings.push(merge_settings(cfg, &actual_repo));
+    findings.push(secret_scanning(cfg, &actual_repo));
+
+    Ok(findings)
+}
+
+fn branch_protection(client: &Client, org: &str, repo: &str, cfg: &RepoConfig) -> Result<Finding> {
+    let mut f = Finding::new("branch_protection", Severity::Error, "AC-3, CM-3");
+    let Some(want) = cfg.branch_protection.as_ref() else {
+        return Ok(f.skip("no branch_protection block configured"));
+    };
+    let actual: Option<ActualBp> = client.get_branch_protection(org, repo, &want.branch)?;
+    let Some(actual) = actual else {
+        f.fail(format!("branch `{}` has no protection rule", want.branch));
+        f.actions.push(Action::PutBranchProtection {
+            summary: format!("create branch protection on `{}`", want.branch),
+            branch: want.branch.clone(),
+            body: branch_protection_body(want),
+        });
+        return Ok(f);
+    };
+
+    let actual_reviews = actual
+        .required_pull_request_reviews
+        .as_ref()
+        .and_then(|r| r.required_approving_review_count)
+        .unwrap_or(0);
+    if actual_reviews != want.required_reviews {
+        f.fail(format!(
+            "required_reviews: want {}, got {actual_reviews}",
+            want.required_reviews
+        ));
+    }
+
+    if want.required_reviews > 0 {
+        let actual_dismiss = actual
+            .required_pull_request_reviews
+            .as_ref()
+            .and_then(|r| r.dismiss_stale_reviews)
+            .unwrap_or(false);
+        if want.dismiss_stale_reviews && !actual_dismiss {
+            f.fail("dismiss_stale_reviews not enabled");
+        }
+        let actual_codeowners = actual
+            .required_pull_request_reviews
+            .as_ref()
+            .and_then(|r| r.require_code_owner_reviews)
+            .unwrap_or(false);
+        if want.require_codeowners && !actual_codeowners {
+            f.fail("require_codeowners not enabled");
+        }
+    }
+
+    let actual_linear = actual.required_linear_history.as_ref().is_some_and(|e| e.enabled);
+    if want.require_linear_history && !actual_linear {
+        f.fail("require_linear_history not enabled");
+    }
+
+    let actual_convo = actual.required_conversation_resolution.as_ref().is_some_and(|e| e.enabled);
+    if want.require_conversation_resolution && !actual_convo {
+        f.fail("require_conversation_resolution not enabled");
+    }
+
+    let actual_force = actual.allow_force_pushes.as_ref().is_some_and(|e| e.enabled);
+    if want.block_force_push && actual_force {
+        f.fail("force pushes are allowed (want blocked)");
+    }
+
+    let actual_delete = actual.allow_deletions.as_ref().is_some_and(|e| e.enabled);
+    if want.block_deletions && actual_delete {
+        f.fail("branch deletions are allowed (want blocked)");
+    }
+
+    let actual_checks: Vec<String> = actual
+        .required_status_checks
+        .map(|c| c.contexts)
+        .unwrap_or_default();
+    let missing: Vec<&String> = want
+        .required_status_checks
+        .iter()
+        .filter(|c| !actual_checks.contains(c))
+        .collect();
+    if !missing.is_empty() {
+        f.fail(format!(
+            "missing required status checks: {}",
+            missing.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")
+        ));
+    }
+
+    if f.status == Status::Fail {
+        f.actions.push(Action::PutBranchProtection {
+            summary: format!("reconcile branch protection on `{}`", want.branch),
+            branch: want.branch.clone(),
+            body: branch_protection_body(want),
+        });
+    }
+
+    Ok(f)
+}
+
+fn branch_protection_body(want: &DesiredBp) -> Value {
+    let pr_reviews = if want.required_reviews > 0 {
+        json!({
+            "required_approving_review_count": want.required_reviews,
+            "dismiss_stale_reviews": want.dismiss_stale_reviews,
+            "require_code_owner_reviews": want.require_codeowners,
+        })
+    } else {
+        Value::Null
+    };
+    let status_checks = if want.required_status_checks.is_empty() {
+        Value::Null
+    } else {
+        json!({ "strict": false, "contexts": want.required_status_checks })
+    };
+    json!({
+        "required_status_checks": status_checks,
+        "enforce_admins": Value::Null,
+        "required_pull_request_reviews": pr_reviews,
+        "restrictions": Value::Null,
+        "required_linear_history": want.require_linear_history,
+        "allow_force_pushes": !want.block_force_push,
+        "allow_deletions": !want.block_deletions,
+        "required_conversation_resolution": want.require_conversation_resolution,
+    })
+}
+
+fn merge_settings(cfg: &RepoConfig, actual: &ActualRepo) -> Finding {
+    let mut f = Finding::new("merge_settings", Severity::Warning, "CM-3");
+    let Some(want) = cfg.merge.as_ref() else {
+        return f.skip("no merge block configured");
+    };
+
+    let mut body = serde_json::Map::new();
+    check_and_patch(&mut f, &mut body, "allow_squash_merge", "allow_squash",
+        want.allow_squash, actual.allow_squash_merge);
+    check_and_patch(&mut f, &mut body, "allow_merge_commit", "allow_merge_commit",
+        want.allow_merge_commit, actual.allow_merge_commit);
+    check_and_patch(&mut f, &mut body, "allow_rebase_merge", "allow_rebase",
+        want.allow_rebase, actual.allow_rebase_merge);
+    check_and_patch(&mut f, &mut body, "delete_branch_on_merge", "delete_branch_on_merge",
+        want.delete_branch_on_merge, actual.delete_branch_on_merge);
+
+    if !body.is_empty() {
+        f.actions.push(Action::PatchRepo {
+            summary: "update merge settings".to_string(),
+            body: Value::Object(body),
+        });
+    }
+    f
+}
+
+fn secret_scanning(cfg: &RepoConfig, actual: &ActualRepo) -> Finding {
+    let mut f = Finding::new("secret_scanning", Severity::Error, "SI-2, SI-4");
+    let Some(want) = cfg.security.as_ref() else {
+        return f.skip("no security block configured");
+    };
+
+    let saa = actual.security_and_analysis.as_ref();
+    let scanning_on = saa.and_then(|s| s.secret_scanning.as_ref()).is_some_and(|t| t.is_enabled());
+    let pushp_on = saa
+        .and_then(|s| s.secret_scanning_push_protection.as_ref())
+        .is_some_and(|t| t.is_enabled());
+
+    let mut saa_body = serde_json::Map::new();
+    if want.secret_scanning == Some(true) && !scanning_on {
+        f.fail("secret_scanning not enabled");
+        saa_body.insert("secret_scanning".into(), json!({ "status": "enabled" }));
+    }
+    if want.push_protection == Some(true) && !pushp_on {
+        f.fail("push_protection not enabled");
+        saa_body.insert("secret_scanning_push_protection".into(), json!({ "status": "enabled" }));
+    }
+    if !saa_body.is_empty() {
+        f.actions.push(Action::PatchRepo {
+            summary: "enable secret scanning".to_string(),
+            body: json!({ "security_and_analysis": Value::Object(saa_body) }),
+        });
+    }
+    f
+}
+
+fn check_and_patch(
+    f: &mut Finding,
+    body: &mut serde_json::Map<String, Value>,
+    api_key: &str,
+    display_key: &str,
+    want: Option<bool>,
+    actual: Option<bool>,
+) {
+    let Some(want) = want else { return };
+    let actual = actual.unwrap_or(false);
+    if want != actual {
+        f.fail(format!("{display_key}: want {want}, got {actual}"));
+        body.insert(api_key.into(), Value::Bool(want));
+    }
+}

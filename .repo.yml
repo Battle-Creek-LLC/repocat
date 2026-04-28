@@ -1,0 +1,52 @@
+# Baseline declarative state for Battle-Creek-LLC/repocat.
+# Schema follows the repocat spec (s-repoman-github-repository-hardening-019dd45e).
+#
+# Notes for this repo specifically:
+#   - Solo maintainer, so `required_reviews` is 0 (no second reviewer available
+#     and admin self-bypass defeats the point of setting it to 1).
+#   - No CI yet, so `required_status_checks` is empty. Add lint/test/etc. once
+#     a workflow ships.
+#   - Org-level controls (MFA, audit log streaming) are managed in a separate
+#     org-scoped baseline, not here.
+
+org: Battle-Creek-LLC
+tier: non-production
+
+repos:
+  repocat:
+    visibility: public
+    description: "GitHub repository hardening CLI"
+
+    branch_protection:
+      branch: main
+      required_reviews: 0
+      dismiss_stale_reviews: true
+      require_codeowners: false
+      require_conversation_resolution: true
+      require_linear_history: true
+      required_status_checks: []
+      block_force_push: true
+      block_deletions: true
+
+    merge:
+      allow_squash: true
+      allow_merge_commit: false
+      allow_rebase: false
+      delete_branch_on_merge: true
+
+    security:
+      secret_scanning: true
+      push_protection: true
+      dependabot_security_updates: true
+      dependency_review: true
+      vulnerability_alerts: true
+      signed_commits_required: false  # flip to true once commit signing is set up locally
+
+    required_files:
+      - README.md
+      - LICENSE
+      - .gitignore
+
+    workflows:
+      default_token_permissions: read
+      pin_actions_to_sha: true
