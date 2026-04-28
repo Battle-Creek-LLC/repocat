@@ -35,7 +35,7 @@ repos:
       secret_scanning: true
       push_protection: true
       dependabot_security_updates: true
-      dependency_review: true  # parsed but not yet enforced — see Module A open questions
+      dependency_graph: true   # L1: server-side toggle (auto-on for public repos)
       vulnerability_alerts: true
 
     required_files:
@@ -46,3 +46,4 @@ repos:
     actions:
       default_workflow_permissions: read
       pin_actions_to_sha: true
+      require_dependency_review_action: true   # L3: workflow-level dep-review enforcement

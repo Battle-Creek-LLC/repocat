@@ -267,6 +267,8 @@ pub struct Repo {
     pub full_name: String,
     pub default_branch: String,
     #[serde(default)]
+    pub private: bool,
+    #[serde(default)]
     pub allow_squash_merge: Option<bool>,
     #[serde(default)]
     pub allow_merge_commit: Option<bool>,
@@ -284,6 +286,8 @@ pub struct SecurityAndAnalysis {
     pub secret_scanning: Option<Toggle>,
     #[serde(default)]
     pub secret_scanning_push_protection: Option<Toggle>,
+    #[serde(default)]
+    pub dependency_graph: Option<Toggle>,
 }
 
 #[derive(Debug, Deserialize)]

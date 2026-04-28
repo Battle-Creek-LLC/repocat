@@ -46,6 +46,8 @@ pub struct ActionsSettings {
     pub pin_actions_to_sha: Option<bool>,
     #[serde(default)]
     pub require_workflow_permissions: Option<bool>,
+    #[serde(default)]
+    pub require_dependency_review_action: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -97,7 +99,7 @@ pub struct SecuritySettings {
     #[serde(default)]
     pub dependabot_config: Option<bool>,
     #[serde(default)]
-    pub dependency_review: Option<bool>,
+    pub dependency_graph: Option<bool>,
     #[serde(default)]
     pub vulnerability_alerts: Option<bool>,
 }

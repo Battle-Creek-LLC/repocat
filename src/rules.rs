@@ -112,7 +112,7 @@ pub fn run_all(client: &Client, org: &str, name: &str, cfg: &RepoConfig) -> Resu
     findings.push(secret_scanning(cfg, &actual_repo));
     findings.push(required_files(client, org, name, cfg)?);
     findings.push(codeowners(client, org, name, cfg)?);
-    findings.push(dependabot_security(client, org, name, cfg)?);
+    findings.push(dependabot_security(client, org, name, cfg, &actual_repo)?);
     findings.push(workflow_permissions(client, org, name, cfg)?);
     findings.push(workflow_yaml(client, org, name, cfg)?);
     findings.push(signed_commits(client, org, name, cfg)?);
@@ -186,7 +186,8 @@ fn workflow_yaml(client: &Client, org: &str, repo: &str, cfg: &RepoConfig) -> Re
     };
     let pin = want.pin_actions_to_sha == Some(true);
     let perms = want.require_workflow_permissions == Some(true);
-    if !pin && !perms {
+    let dep_review = want.require_dependency_review_action == Some(true);
+    if !pin && !perms && !dep_review {
         return Ok(f.skip("no workflow yaml checks configured"));
     }
 
@@ -196,9 +197,15 @@ fn workflow_yaml(client: &Client, org: &str, repo: &str, cfg: &RepoConfig) -> Re
         .filter(|e| e.kind == "file" && (e.name.ends_with(".yml") || e.name.ends_with(".yaml")))
         .collect();
     if workflow_files.is_empty() {
+        if dep_review {
+            f.fail("require_dependency_review_action set, but no workflows present");
+            f.messages.push("no automatic remediation — add a dependency-review workflow via PR".into());
+            return Ok(f);
+        }
         return Ok(f.skip("no .github/workflows/*.yml files"));
     }
 
+    let mut has_dep_review_action = false;
     for entry in workflow_files {
         let Some(content) = client.get_file_content(org, repo, &entry.path)? else { continue };
         let parsed: serde_yml::Value = match serde_yml::from_str(&content) {
@@ -214,12 +221,36 @@ fn workflow_yaml(client: &Client, org: &str, repo: &str, cfg: &RepoConfig) -> Re
         if perms {
             check_workflow_permissions_block(&parsed, &entry.name, &mut f);
         }
+        if dep_review && !has_dep_review_action {
+            has_dep_review_action = uses_dependency_review_action(&parsed);
+        }
+    }
+
+    if dep_review && !has_dep_review_action {
+        f.fail("no workflow uses actions/dependency-review-action");
     }
 
     if f.status == Status::Fail {
         f.messages.push("no automatic remediation — fix workflow files via PR".into());
     }
     Ok(f)
+}
+
+fn uses_dependency_review_action(yml: &serde_yml::Value) -> bool {
+    let Some(jobs) = yml.get("jobs").and_then(|j| j.as_mapping()) else { return false };
+    for (_, job) in jobs {
+        let Some(steps) = job.get("steps").and_then(|s| s.as_sequence()) else { continue };
+        for step in steps {
+            let Some(uses) = step.get("uses").and_then(|u| u.as_str()) else { continue };
+            let key = uses.split('@').next().unwrap_or(uses);
+            if key == "actions/dependency-review-action"
+                || key.starts_with("actions/dependency-review-action/")
+            {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 fn check_action_pins(yml: &serde_yml::Value, file: &str, f: &mut Finding) {
@@ -310,7 +341,13 @@ fn workflow_permissions(client: &Client, org: &str, repo: &str, cfg: &RepoConfig
     Ok(f)
 }
 
-fn dependabot_security(client: &Client, org: &str, repo: &str, cfg: &RepoConfig) -> Result<Finding> {
+fn dependabot_security(
+    client: &Client,
+    org: &str,
+    repo: &str,
+    cfg: &RepoConfig,
+    actual_repo: &ActualRepo,
+) -> Result<Finding> {
     let mut f = Finding::new("dependabot_security", Severity::Error, "SI-2, SR-3");
     let Some(want) = cfg.security.as_ref() else {
         return Ok(f.skip("no security block configured"));
@@ -318,6 +355,7 @@ fn dependabot_security(client: &Client, org: &str, repo: &str, cfg: &RepoConfig)
     if want.vulnerability_alerts.is_none()
         && want.dependabot_security_updates.is_none()
         && want.dependabot_config != Some(true)
+        && want.dependency_graph != Some(true)
     {
         return Ok(f.skip("no dependabot fields configured"));
     }
@@ -338,6 +376,30 @@ fn dependabot_security(client: &Client, org: &str, repo: &str, cfg: &RepoConfig)
             f.actions.push(Action::SimplePut {
                 summary: "enable Dependabot security updates".into(),
                 path: format!("/repos/{org}/{repo}/automated-security-fixes"),
+            });
+        }
+    }
+
+    if want.dependency_graph == Some(true) {
+        let echoed = actual_repo
+            .security_and_analysis
+            .as_ref()
+            .and_then(|s| s.dependency_graph.as_ref());
+        // Public repos have the dependency graph implicitly enabled but the
+        // API omits the field from the response; treat absence as enabled.
+        let on = match echoed {
+            Some(t) => t.is_enabled(),
+            None => !actual_repo.private,
+        };
+        if !on {
+            f.fail("dependency_graph not enabled (private repo without GitHub Advanced Security?)");
+            f.actions.push(Action::PatchRepo {
+                summary: "enable dependency graph".into(),
+                body: json!({
+                    "security_and_analysis": {
+                        "dependency_graph": { "status": "enabled" }
+                    }
+                }),
             });
         }
     }
