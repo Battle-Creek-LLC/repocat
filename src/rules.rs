@@ -1,4 +1,4 @@
-use crate::api::{BranchProtection as ActualBp, Client, Repo as ActualRepo};
+use crate::api::{BranchProtection as ActualBp, Client, Repo as ActualRepo, RepoTeam};
 use crate::config::{BranchProtection as DesiredBp, RepoConfig};
 use anyhow::Result;
 use serde_json::{json, Value};
@@ -116,8 +116,49 @@ pub fn run_all(client: &Client, org: &str, name: &str, cfg: &RepoConfig) -> Resu
     findings.push(workflow_permissions(client, org, name, cfg)?);
     findings.push(workflow_yaml(client, org, name, cfg)?);
     findings.push(signed_commits(client, org, name, cfg)?);
+    findings.push(teams_only_access(client, org, name, cfg)?);
 
     Ok(findings)
+}
+
+fn teams_only_access(client: &Client, org: &str, repo: &str, cfg: &RepoConfig) -> Result<Finding> {
+    let mut f = Finding::new("teams_only_access", Severity::Warning, "AC-2, AC-6");
+    if cfg.teams.is_empty() {
+        return Ok(f.skip("no teams block configured"));
+    }
+
+    let direct: Vec<_> = client
+        .list_direct_collaborators(org, repo)?
+        .into_iter()
+        .map(|c| c.login)
+        .collect();
+    if !direct.is_empty() {
+        f.fail(format!(
+            "direct collaborators (should be on a team): {}",
+            direct.join(", ")
+        ));
+    }
+
+    let attached = client.list_repo_teams(org, repo)?;
+    for want in &cfg.teams {
+        match find_team(&attached, &want.name) {
+            None => f.fail(format!("team `{}` not attached to repo", want.name)),
+            Some(actual) if actual.permission != want.permission => f.fail(format!(
+                "team `{}` permission: want {}, got {}",
+                want.name, want.permission, actual.permission
+            )),
+            Some(_) => {}
+        }
+    }
+
+    if f.status == Status::Fail {
+        f.messages.push("no automatic remediation — adjust access via org settings".into());
+    }
+    Ok(f)
+}
+
+fn find_team<'a>(attached: &'a [RepoTeam], name: &str) -> Option<&'a RepoTeam> {
+    attached.iter().find(|t| t.name == name || t.slug == name)
 }
 
 fn signed_commits(client: &Client, org: &str, repo: &str, cfg: &RepoConfig) -> Result<Finding> {
