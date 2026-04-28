@@ -90,6 +90,39 @@ impl Client {
         Ok(())
     }
 
+    /// Resolves the latest release tag of an action repo to its commit SHA.
+    /// Used to SHA-pin scaffolded workflow `uses:` lines.
+    pub fn latest_action_sha(&self, owner: &str, repo: &str) -> Result<String> {
+        let release: ReleaseRef = self
+            .get(&format!("/repos/{owner}/{repo}/releases/latest"))?
+            .into_json()?;
+        let commit: CommitRef = self
+            .get(&format!("/repos/{owner}/{repo}/commits/{}", release.tag_name))?
+            .into_json()?;
+        Ok(commit.sha)
+    }
+
+    /// Creates a new file in the repo on the default branch via the contents API.
+    /// Errors if the file already exists (the contents API requires `sha` for updates,
+    /// and we deliberately don't supply one to avoid clobbering user content).
+    pub fn create_file(
+        &self,
+        org: &str,
+        repo: &str,
+        path: &str,
+        content: &str,
+        commit_message: &str,
+    ) -> Result<()> {
+        let encoded_path = path.split('/').map(urlencode).collect::<Vec<_>>().join("/");
+        let endpoint = format!("/repos/{org}/{repo}/contents/{encoded_path}");
+        let body = serde_json::json!({
+            "message": commit_message,
+            "content": B64.encode(content.as_bytes()),
+        });
+        self.send_json("PUT", &endpoint, &body)?;
+        Ok(())
+    }
+
     pub fn get_workflow_permissions(&self, org: &str, repo: &str) -> Result<WorkflowPermissions> {
         let path = format!("/repos/{org}/{repo}/actions/permissions/workflow");
         Ok(self.get(&path)?.into_json()?)
@@ -222,6 +255,16 @@ impl Client {
 #[derive(Debug, Deserialize)]
 struct ContentPayload {
     content: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ReleaseRef {
+    tag_name: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct CommitRef {
+    sha: String,
 }
 
 #[derive(Debug, Deserialize)]
