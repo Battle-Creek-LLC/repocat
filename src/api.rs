@@ -1,4 +1,5 @@
 use anyhow::{anyhow, Result};
+use base64::{engine::general_purpose::STANDARD as B64, Engine};
 use serde::Deserialize;
 
 use crate::auth::user_agent;
@@ -109,6 +110,18 @@ impl Client {
         Ok(self.get_optional(&endpoint)?.is_some())
     }
 
+    /// Returns Some(decoded text) if the path is a file, None if 404.
+    /// Errors if the path resolves to a directory or if base64 decode fails.
+    pub fn get_file_content(&self, org: &str, repo: &str, path: &str) -> Result<Option<String>> {
+        let encoded = path.split('/').map(urlencode).collect::<Vec<_>>().join("/");
+        let endpoint = format!("/repos/{org}/{repo}/contents/{encoded}");
+        let Some(resp) = self.get_optional(&endpoint)? else { return Ok(None); };
+        let payload: ContentPayload = resp.into_json()?;
+        let bytes = B64.decode(payload.content.replace('\n', ""))
+            .map_err(|e| anyhow!("base64 decode of {path}: {e}"))?;
+        Ok(Some(String::from_utf8_lossy(&bytes).into_owned()))
+    }
+
     pub fn get_branch_protection(
         &self,
         org: &str,
@@ -119,6 +132,11 @@ impl Client {
         let Some(resp) = self.get_optional(&path)? else { return Ok(None); };
         Ok(Some(resp.into_json()?))
     }
+}
+
+#[derive(Debug, Deserialize)]
+struct ContentPayload {
+    content: String,
 }
 
 #[derive(Debug, Deserialize)]
