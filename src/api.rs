@@ -85,6 +85,16 @@ impl Client {
         Ok(())
     }
 
+    pub fn put_json(&self, path: &str, body: &serde_json::Value) -> Result<()> {
+        self.send_json("PUT", path, body)?;
+        Ok(())
+    }
+
+    pub fn get_workflow_permissions(&self, org: &str, repo: &str) -> Result<WorkflowPermissions> {
+        let path = format!("/repos/{org}/{repo}/actions/permissions/workflow");
+        Ok(self.get(&path)?.into_json()?)
+    }
+
     pub fn put_no_body(&self, path: &str) -> Result<()> {
         let url = format!("https://api.github.com{path}");
         ureq::put(&url)
@@ -168,6 +178,12 @@ impl Client {
 #[derive(Debug, Deserialize)]
 struct ContentPayload {
     content: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct WorkflowPermissions {
+    pub default_workflow_permissions: String,
+    pub can_approve_pull_request_reviews: bool,
 }
 
 #[derive(Debug, Deserialize)]

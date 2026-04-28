@@ -13,6 +13,7 @@ Early development. `audit`, `diff`, and `apply` work for these rules:
 - `required_files` (CM-2) — audit-only; surfaces missing paths but cannot create them
 - `codeowners` (CM-3, AC-5) — audit-only; verifies `.github/CODEOWNERS` exists and has at least one ownership rule
 - `dependabot_security` (SI-2, SR-3) — vulnerability alerts, Dependabot security updates, optional `.github/dependabot.yml` presence
+- `workflow_permissions` (AC-6, SR-3) — repo-level default `GITHUB_TOKEN` scope and PR-approval permission
 
 ## Usage
 
