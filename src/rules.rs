@@ -109,8 +109,99 @@ pub fn run_all(client: &Client, org: &str, name: &str, cfg: &RepoConfig) -> Resu
     findings.push(codeowners(client, org, name, cfg)?);
     findings.push(dependabot_security(client, org, name, cfg)?);
     findings.push(workflow_permissions(client, org, name, cfg)?);
+    findings.push(workflow_yaml(client, org, name, cfg)?);
 
     Ok(findings)
+}
+
+fn workflow_yaml(client: &Client, org: &str, repo: &str, cfg: &RepoConfig) -> Result<Finding> {
+    let mut f = Finding::new("workflow_yaml", Severity::Error, "AC-6, SR-3");
+    let Some(want) = cfg.actions.as_ref() else {
+        return Ok(f.skip("no actions block configured"));
+    };
+    let pin = want.pin_actions == Some(true);
+    let perms = want.require_workflow_permissions == Some(true);
+    if !pin && !perms {
+        return Ok(f.skip("no workflow yaml checks configured"));
+    }
+
+    let entries = client.list_directory(org, repo, ".github/workflows")?;
+    let workflow_files: Vec<_> = entries
+        .iter()
+        .filter(|e| e.kind == "file" && (e.name.ends_with(".yml") || e.name.ends_with(".yaml")))
+        .collect();
+    if workflow_files.is_empty() {
+        return Ok(f.skip("no .github/workflows/*.yml files"));
+    }
+
+    for entry in workflow_files {
+        let Some(content) = client.get_file_content(org, repo, &entry.path)? else { continue };
+        let parsed: serde_yml::Value = match serde_yml::from_str(&content) {
+            Ok(v) => v,
+            Err(e) => {
+                f.fail(format!("{}: yaml parse error: {e}", entry.name));
+                continue;
+            }
+        };
+        if pin {
+            check_action_pins(&parsed, &entry.name, &mut f);
+        }
+        if perms {
+            check_workflow_permissions_block(&parsed, &entry.name, &mut f);
+        }
+    }
+
+    if f.status == Status::Fail {
+        f.messages.push("no automatic remediation — fix workflow files via PR".into());
+    }
+    Ok(f)
+}
+
+fn check_action_pins(yml: &serde_yml::Value, file: &str, f: &mut Finding) {
+    let Some(jobs) = yml.get("jobs").and_then(|j| j.as_mapping()) else { return };
+    for (job_name, job) in jobs {
+        let job_label = job_name.as_str().unwrap_or("?");
+        if let Some(uses) = job.get("uses").and_then(|u| u.as_str()) {
+            check_one_use(uses, file, job_label, None, f);
+        }
+        let Some(steps) = job.get("steps").and_then(|s| s.as_sequence()) else { continue };
+        for (i, step) in steps.iter().enumerate() {
+            if let Some(uses) = step.get("uses").and_then(|u| u.as_str()) {
+                check_one_use(uses, file, job_label, Some(i), f);
+            }
+        }
+    }
+}
+
+fn check_one_use(uses: &str, file: &str, job: &str, step: Option<usize>, f: &mut Finding) {
+    if uses.starts_with("./") || uses.starts_with("docker://") {
+        return;
+    }
+    let Some((_, reference)) = uses.rsplit_once('@') else {
+        f.fail(format!("{file}:{job}: `{uses}` has no version reference"));
+        return;
+    };
+    let is_sha = reference.len() == 40 && reference.chars().all(|c| c.is_ascii_hexdigit());
+    if !is_sha {
+        let loc = match step {
+            Some(i) => format!("{file}:{job}[{i}]"),
+            None => format!("{file}:{job}"),
+        };
+        f.fail(format!("{loc}: unpinned `{uses}` (use SHA, not `{reference}`)"));
+    }
+}
+
+fn check_workflow_permissions_block(yml: &serde_yml::Value, file: &str, f: &mut Finding) {
+    if yml.get("permissions").is_some() {
+        return;
+    }
+    let Some(jobs) = yml.get("jobs").and_then(|j| j.as_mapping()) else { return };
+    for (job_name, job) in jobs {
+        if job.get("permissions").is_none() {
+            let label = job_name.as_str().unwrap_or("?");
+            f.fail(format!("{file}:{label}: no permissions block (top-level or job-level)"));
+        }
+    }
 }
 
 fn workflow_permissions(client: &Client, org: &str, repo: &str, cfg: &RepoConfig) -> Result<Finding> {
