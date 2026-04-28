@@ -6,18 +6,12 @@ use std::{collections::BTreeMap, fs, path::Path};
 #[serde(deny_unknown_fields)]
 pub struct Config {
     pub org: String,
-    #[serde(default)]
-    pub tier: Option<String>,
     pub repos: BTreeMap<String, RepoConfig>,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RepoConfig {
-    #[serde(default)]
-    pub visibility: Option<String>,
-    #[serde(default)]
-    pub description: Option<String>,
     #[serde(default)]
     pub branch_protection: Option<BranchProtection>,
     #[serde(default)]
