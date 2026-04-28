@@ -22,6 +22,8 @@ pub struct RepoConfig {
     pub merge: Option<MergeSettings>,
     #[serde(default)]
     pub security: Option<SecuritySettings>,
+    #[serde(default)]
+    pub required_files: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
