@@ -11,6 +11,7 @@ Early development. `audit`, `diff`, and `apply` work for these rules:
 - `merge_settings` (CM-3)
 - `secret_scanning` (SI-2, SI-4)
 - `required_files` (CM-2) — audit-only; surfaces missing paths but cannot create them
+- `codeowners` (CM-3, AC-5) — audit-only; verifies `.github/CODEOWNERS` exists and has at least one ownership rule
 
 ## Usage
 

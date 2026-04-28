@@ -96,8 +96,31 @@ pub fn run_all(client: &Client, org: &str, name: &str, cfg: &RepoConfig) -> Resu
     findings.push(merge_settings(cfg, &actual_repo));
     findings.push(secret_scanning(cfg, &actual_repo));
     findings.push(required_files(client, org, name, cfg)?);
+    findings.push(codeowners(client, org, name, cfg)?);
 
     Ok(findings)
+}
+
+fn codeowners(client: &Client, org: &str, repo: &str, cfg: &RepoConfig) -> Result<Finding> {
+    let mut f = Finding::new("codeowners", Severity::Error, "CM-3, AC-5");
+    if cfg.codeowners != Some(true) {
+        return Ok(f.skip("codeowners not required"));
+    }
+    let path = ".github/CODEOWNERS";
+    let Some(content) = client.get_file_content(org, repo, path)? else {
+        f.fail(format!("{path} is missing"));
+        f.messages.push("no automatic remediation — add file via PR".into());
+        return Ok(f);
+    };
+    let has_rule = content
+        .lines()
+        .map(str::trim)
+        .any(|l| !l.is_empty() && !l.starts_with('#'));
+    if !has_rule {
+        f.fail(format!("{path} has no ownership rules (only blank/comment lines)"));
+        f.messages.push("no automatic remediation — add owners via PR".into());
+    }
+    Ok(f)
 }
 
 fn required_files(client: &Client, org: &str, repo: &str, cfg: &RepoConfig) -> Result<Finding> {

@@ -24,6 +24,8 @@ pub struct RepoConfig {
     pub security: Option<SecuritySettings>,
     #[serde(default)]
     pub required_files: Vec<String>,
+    #[serde(default)]
+    pub codeowners: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
