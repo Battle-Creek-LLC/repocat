@@ -10,6 +10,7 @@ Early development. `audit`, `diff`, and `apply` work for these rules:
 - `branch_protection` (AC-3, CM-3)
 - `merge_settings` (CM-3)
 - `secret_scanning` (SI-2, SI-4)
+- `required_files` (CM-2) — audit-only; surfaces missing paths but cannot create them
 
 ## Usage
 

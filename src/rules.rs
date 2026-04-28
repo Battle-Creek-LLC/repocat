@@ -95,8 +95,28 @@ pub fn run_all(client: &Client, org: &str, name: &str, cfg: &RepoConfig) -> Resu
     findings.push(branch_protection(client, org, name, cfg)?);
     findings.push(merge_settings(cfg, &actual_repo));
     findings.push(secret_scanning(cfg, &actual_repo));
+    findings.push(required_files(client, org, name, cfg)?);
 
     Ok(findings)
+}
+
+fn required_files(client: &Client, org: &str, repo: &str, cfg: &RepoConfig) -> Result<Finding> {
+    let mut f = Finding::new("required_files", Severity::Warning, "CM-2");
+    let want = &cfg.required_files;
+    if want.is_empty() {
+        return Ok(f.skip("no required_files configured"));
+    }
+    let mut missing = Vec::new();
+    for path in want {
+        if !client.path_exists(org, repo, path)? {
+            missing.push(path.clone());
+        }
+    }
+    if !missing.is_empty() {
+        f.fail(format!("missing: {}", missing.join(", ")));
+        f.messages.push("no automatic remediation — add files via PR".into());
+    }
+    Ok(f)
 }
 
 fn branch_protection(client: &Client, org: &str, repo: &str, cfg: &RepoConfig) -> Result<Finding> {

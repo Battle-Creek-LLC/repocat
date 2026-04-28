@@ -3,6 +3,19 @@ use serde::Deserialize;
 
 use crate::auth::user_agent;
 
+fn urlencode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char);
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
 pub struct Client {
     token: String,
 }
@@ -88,6 +101,12 @@ impl Client {
 
     pub fn get_repo(&self, org: &str, repo: &str) -> Result<Repo> {
         Ok(self.get(&format!("/repos/{org}/{repo}"))?.into_json()?)
+    }
+
+    pub fn path_exists(&self, org: &str, repo: &str, path: &str) -> Result<bool> {
+        let encoded = path.split('/').map(urlencode).collect::<Vec<_>>().join("/");
+        let endpoint = format!("/repos/{org}/{repo}/contents/{encoded}");
+        Ok(self.get_optional(&endpoint)?.is_some())
     }
 
     pub fn get_branch_protection(
