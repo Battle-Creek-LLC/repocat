@@ -16,6 +16,7 @@ Early development. `audit`, `diff`, and `apply` work for these rules:
 - `workflow_permissions` (AC-6, SR-3) — repo-level default `GITHUB_TOKEN` scope and PR-approval permission
 - `workflow_yaml` (AC-6, SR-3) — audit-only; scans `.github/workflows/*.yml` for unpinned action refs and missing `permissions:` blocks
 - `signed_commits` (SI-7) — required-signatures enforcement on the protected branch
+- `teams_only_access` (AC-2, AC-6) — audit-only; flags direct collaborators and team-permission drift
 
 ## Usage
 

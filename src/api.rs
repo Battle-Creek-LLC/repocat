@@ -172,6 +172,16 @@ impl Client {
     }
 
     /// Lists entries in a directory. Returns empty Vec if the path doesn't exist.
+    pub fn list_direct_collaborators(&self, org: &str, repo: &str) -> Result<Vec<Collaborator>> {
+        let path = format!("/repos/{org}/{repo}/collaborators?affiliation=direct&per_page=100");
+        Ok(self.get(&path)?.into_json()?)
+    }
+
+    pub fn list_repo_teams(&self, org: &str, repo: &str) -> Result<Vec<RepoTeam>> {
+        let path = format!("/repos/{org}/{repo}/teams?per_page=100");
+        Ok(self.get(&path)?.into_json()?)
+    }
+
     pub fn list_directory(&self, org: &str, repo: &str, path: &str) -> Result<Vec<DirEntry>> {
         let encoded = path.split('/').map(urlencode).collect::<Vec<_>>().join("/");
         let endpoint = format!("/repos/{org}/{repo}/contents/{encoded}");
@@ -212,6 +222,18 @@ impl Client {
 #[derive(Debug, Deserialize)]
 struct ContentPayload {
     content: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct Collaborator {
+    pub login: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RepoTeam {
+    pub slug: String,
+    pub name: String,
+    pub permission: String,
 }
 
 #[derive(Debug, Deserialize)]

@@ -28,6 +28,14 @@ pub struct RepoConfig {
     pub codeowners: Option<bool>,
     #[serde(default)]
     pub actions: Option<ActionsSettings>,
+    #[serde(default)]
+    pub teams: Vec<TeamSpec>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TeamSpec {
+    pub name: String,
+    pub permission: String,
 }
 
 #[derive(Debug, Deserialize)]
