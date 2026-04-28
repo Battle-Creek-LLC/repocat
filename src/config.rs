@@ -3,6 +3,7 @@ use serde::Deserialize;
 use std::{collections::BTreeMap, fs, path::Path};
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
     pub org: String,
     #[serde(default)]
@@ -11,6 +12,7 @@ pub struct Config {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RepoConfig {
     #[serde(default)]
     pub visibility: Option<String>,
@@ -33,24 +35,27 @@ pub struct RepoConfig {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TeamSpec {
     pub name: String,
     pub permission: String,
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ActionsSettings {
     #[serde(default)]
     pub default_workflow_permissions: Option<String>,
     #[serde(default)]
     pub can_approve_pull_request_reviews: Option<bool>,
     #[serde(default)]
-    pub pin_actions: Option<bool>,
+    pub pin_actions_to_sha: Option<bool>,
     #[serde(default)]
     pub require_workflow_permissions: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BranchProtection {
     pub branch: String,
     #[serde(default)]
@@ -74,6 +79,7 @@ pub struct BranchProtection {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MergeSettings {
     #[serde(default)]
     pub allow_squash: Option<bool>,
@@ -86,6 +92,7 @@ pub struct MergeSettings {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SecuritySettings {
     #[serde(default)]
     pub secret_scanning: Option<bool>,
@@ -99,8 +106,6 @@ pub struct SecuritySettings {
     pub dependency_review: Option<bool>,
     #[serde(default)]
     pub vulnerability_alerts: Option<bool>,
-    #[serde(default)]
-    pub signed_commits_required: Option<bool>,
 }
 
 pub fn load(path: &Path) -> Result<Config> {
