@@ -204,6 +204,20 @@ impl Client {
         Ok(self.get(&format!("/repos/{org}/{repo}"))?.into_json()?)
     }
 
+    /// Returns the OAuth scopes attached to the current token, parsed from
+    /// the X-OAuth-Scopes response header on GET /user. Empty for fine-grained
+    /// PATs (which expose permissions differently).
+    pub fn oauth_scopes(&self) -> Result<Vec<String>> {
+        let resp = self.get("/user")?;
+        let header = resp.header("X-OAuth-Scopes").unwrap_or("");
+        Ok(header
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(String::from)
+            .collect())
+    }
+
     /// Lists entries in a directory. Returns empty Vec if the path doesn't exist.
     pub fn list_direct_collaborators(&self, org: &str, repo: &str) -> Result<Vec<Collaborator>> {
         let path = format!("/repos/{org}/{repo}/collaborators?affiliation=direct&per_page=100");

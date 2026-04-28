@@ -119,6 +119,10 @@ fn run(mode: Mode, raw_args: &[String]) -> Result<ExitCode> {
     eprintln!("authenticated as {login}");
     let client = api::Client::new(token);
 
+    if effective_mode == Mode::Apply {
+        preflight_scopes(&client, &cfg, &args)?;
+    }
+
     let mut any_error = false;
     let mut any_apply_error = false;
 
@@ -148,6 +152,36 @@ fn run(mode: Mode, raw_args: &[String]) -> Result<ExitCode> {
         Mode::Apply => if any_apply_error { 3 } else { 0 },
     };
     Ok(ExitCode::from(code))
+}
+
+fn preflight_scopes(client: &api::Client, cfg: &Config, args: &Args) -> Result<()> {
+    let needs_workflow = target_repos(cfg, args)?
+        .iter()
+        .any(|name| {
+            cfg.repos[*name]
+                .actions
+                .as_ref()
+                .and_then(|a| a.require_dependency_review_action)
+                .unwrap_or(false)
+        });
+    if !needs_workflow {
+        return Ok(());
+    }
+    let scopes = client.oauth_scopes()?;
+    if scopes.is_empty() {
+        // Fine-grained PAT — scopes don't appear in this header. Trust and proceed;
+        // the API will return a clear error if permissions are insufficient.
+        return Ok(());
+    }
+    if !scopes.iter().any(|s| s == "workflow") {
+        return Err(anyhow!(
+            "apply needs the `workflow` OAuth scope to scaffold dependency-review \
+             workflows, but the current token has only [{}]. Run \
+             `gh auth refresh --hostname github.com -s workflow` and retry.",
+            scopes.join(", ")
+        ));
+    }
+    Ok(())
 }
 
 fn render_table(findings: &[Finding]) {
