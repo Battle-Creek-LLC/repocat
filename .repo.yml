@@ -27,6 +27,7 @@ repos:
       required_status_checks: []
       block_force_push: true
       block_deletions: true
+      signed_commits: false  # flip to true once commit signing is set up locally
 
     merge:
       allow_squash: true
@@ -38,15 +39,14 @@ repos:
       secret_scanning: true
       push_protection: true
       dependabot_security_updates: true
-      dependency_review: true
+      dependency_review: true  # parsed but not yet enforced — see Module A open questions
       vulnerability_alerts: true
-      signed_commits_required: false  # flip to true once commit signing is set up locally
 
     required_files:
       - README.md
       - LICENSE
       - .gitignore
 
-    workflows:
-      default_token_permissions: read
+    actions:
+      default_workflow_permissions: read
       pin_actions_to_sha: true

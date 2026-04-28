@@ -184,7 +184,7 @@ fn workflow_yaml(client: &Client, org: &str, repo: &str, cfg: &RepoConfig) -> Re
     let Some(want) = cfg.actions.as_ref() else {
         return Ok(f.skip("no actions block configured"));
     };
-    let pin = want.pin_actions == Some(true);
+    let pin = want.pin_actions_to_sha == Some(true);
     let perms = want.require_workflow_permissions == Some(true);
     if !pin && !perms {
         return Ok(f.skip("no workflow yaml checks configured"));
