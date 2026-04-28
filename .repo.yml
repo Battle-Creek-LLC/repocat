@@ -10,13 +10,9 @@
 #     org-scoped baseline, not here.
 
 org: Battle-Creek-LLC
-tier: non-production
 
 repos:
   repocat:
-    visibility: public
-    description: "GitHub repository hardening CLI"
-
     branch_protection:
       branch: main
       required_reviews: 0
