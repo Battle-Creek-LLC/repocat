@@ -694,7 +694,7 @@ fn actual_to_put_body(actual: &Value) -> Value {
     };
 
     let pr_reviews = actual.get("required_pull_request_reviews").cloned()
-        .map(strip_pr_reviews_url)
+        .map(pr_reviews_to_put_body)
         .unwrap_or(Value::Null);
     let status_checks = actual.get("required_status_checks").cloned()
         .map(strip_status_checks_url)
@@ -723,14 +723,21 @@ fn actual_to_put_body(actual: &Value) -> Value {
     })
 }
 
-fn strip_pr_reviews_url(mut v: Value) -> Value {
-    if let Some(obj) = v.as_object_mut() {
-        obj.remove("url");
-        if let Some(d) = obj.get_mut("dismissal_restrictions").and_then(|d| d.as_object_mut()) {
-            d.remove("url");
-            d.remove("users_url");
-            d.remove("teams_url");
-        }
+// PUT body for required_pull_request_reviews drops the URL and shape-transforms
+// dismissal_restrictions and bypass_pull_request_allowances — both are nested
+// actor sets whose GET shape (objects with login/slug/id/url) is rejected by
+// the PUT endpoint, which expects bare-string arrays.
+fn pr_reviews_to_put_body(mut v: Value) -> Value {
+    let Some(obj) = v.as_object_mut() else { return v };
+    obj.remove("url");
+    if let Some(dr) = obj.get("dismissal_restrictions").cloned() {
+        obj.insert("dismissal_restrictions".into(), to_put_actor_set(&dr, &["users", "teams"]));
+    }
+    if let Some(bp) = obj.get("bypass_pull_request_allowances").cloned() {
+        obj.insert(
+            "bypass_pull_request_allowances".into(),
+            to_put_actor_set(&bp, &["users", "teams", "apps"]),
+        );
     }
     v
 }
@@ -743,24 +750,33 @@ fn strip_status_checks_url(mut v: Value) -> Value {
     v
 }
 
-// PUT expects restrictions as { users: [logins], teams: [slugs], apps: [slugs] }
-// — strings, not the nested user/team objects the GET returns.
-fn strip_restrictions_for_put(v: Value) -> Value {
+// Convert a GET-shape actor set ({ users: [{login, ...}], teams: [{slug, ...}], ... })
+// to the PUT-shape ({ users: ["login"], teams: ["slug"], ... }). `kinds` lets
+// callers opt out of fields the endpoint doesn't accept (dismissal_restrictions
+// has no `apps`, restrictions and bypass_pull_request_allowances do).
+fn to_put_actor_set(v: &Value, kinds: &[&str]) -> Value {
     let Some(obj) = v.as_object() else { return Value::Null };
-    let extract = |key: &str, name_field: &str| -> Vec<Value> {
-        obj.get(key)
+    let mut out = serde_json::Map::new();
+    for kind in kinds {
+        let name_field = if *kind == "users" { "login" } else { "slug" };
+        let names: Vec<Value> = obj
+            .get(*kind)
             .and_then(|v| v.as_array())
-            .map(|arr| arr.iter()
+            .map(|a| a.iter()
                 .filter_map(|e| e.get(name_field).and_then(|s| s.as_str()))
                 .map(|s| Value::String(s.into()))
                 .collect())
-            .unwrap_or_default()
-    };
-    json!({
-        "users": extract("users", "login"),
-        "teams": extract("teams", "slug"),
-        "apps": extract("apps", "slug"),
-    })
+            .unwrap_or_default();
+        out.insert((*kind).into(), Value::Array(names));
+    }
+    Value::Object(out)
+}
+
+fn strip_restrictions_for_put(v: Value) -> Value {
+    if !v.is_object() {
+        return Value::Null;
+    }
+    to_put_actor_set(&v, &["users", "teams", "apps"])
 }
 
 fn overlay_pr_reviews(map: &mut serde_json::Map<String, Value>, want: &DesiredBp) {
@@ -783,6 +799,13 @@ fn overlay_pr_reviews(map: &mut serde_json::Map<String, Value>, want: &DesiredBp
     }
     if let Some(b) = want.require_codeowners {
         pr_obj.insert("require_code_owner_reviews".into(), Value::Bool(b));
+    }
+    // GitHub rejects a non-null required_pull_request_reviews block that lacks
+    // required_approving_review_count. If the user declared sub-fields without
+    // a count and the actual state had no block to inherit one from, drop the
+    // overlay rather than emit a body the API will 422 on.
+    if !pr_obj.contains_key("required_approving_review_count") {
+        return;
     }
     map.insert("required_pull_request_reviews".into(), pr);
 }
@@ -914,10 +937,17 @@ mod tests {
                 "dismiss_stale_reviews": true,
                 "require_code_owner_reviews": true,
                 "require_last_push_approval": true,
+                "dismissal_restrictions": {
+                    "url": "https://api.github.com/.../dismissal_restrictions",
+                    "users_url": "https://api.github.com/.../users",
+                    "teams_url": "https://api.github.com/.../teams",
+                    "users": [{"login": "alice", "id": 1}],
+                    "teams": [{"slug": "platform", "id": 2}]
+                },
                 "bypass_pull_request_allowances": {
-                    "users": [{"login": "ops-bot"}],
-                    "teams": [],
-                    "apps": []
+                    "users": [{"login": "ops-bot", "id": 7}],
+                    "teams": [{"slug": "release", "id": 8}],
+                    "apps":  [{"slug": "deploy-bot", "id": 9}]
                 }
             },
             "required_status_checks": {
@@ -1028,6 +1058,54 @@ mod tests {
         assert_eq!(body["lock_branch"], json!(true));
         assert_eq!(body["allow_fork_syncing"], json!(true));
         assert_eq!(body["block_creations"], json!(true));
+    }
+
+    #[test]
+    fn dismissal_restrictions_become_put_shape() {
+        let want = want_minimal("main");
+        let body = branch_protection_body(&want, Some(&realistic_actual()));
+        let dr = &body["required_pull_request_reviews"]["dismissal_restrictions"];
+        assert_eq!(dr["users"], json!(["alice"]), "users must be string array, not user objects");
+        assert_eq!(dr["teams"], json!(["platform"]));
+        assert!(dr.get("url").is_none(), "URL fields must be stripped");
+        assert!(dr.get("users_url").is_none());
+        assert!(dr.get("teams_url").is_none());
+    }
+
+    #[test]
+    fn bypass_allowances_become_put_shape() {
+        let want = want_minimal("main");
+        let body = branch_protection_body(&want, Some(&realistic_actual()));
+        let bp = &body["required_pull_request_reviews"]["bypass_pull_request_allowances"];
+        assert_eq!(bp["users"], json!(["ops-bot"]));
+        assert_eq!(bp["teams"], json!(["release"]));
+        assert_eq!(bp["apps"], json!(["deploy-bot"]));
+    }
+
+    #[test]
+    fn pr_subfield_without_count_is_dropped() {
+        // User declares dismiss_stale_reviews but never required_reviews, and
+        // there's no actual PR-review block to inherit a count from. We must
+        // not emit a malformed PR-review block — drop it entirely.
+        let mut want = want_minimal("main");
+        want.dismiss_stale_reviews = Some(true);
+        let body = branch_protection_body(&want, None);
+        assert_eq!(
+            body["required_pull_request_reviews"], Value::Null,
+            "should not emit PR block without required_approving_review_count"
+        );
+    }
+
+    #[test]
+    fn pr_subfield_with_inherited_count_is_kept() {
+        // Same shape as above but actual already has a PR-review block with a
+        // count — the count is inherited, so the overlay is well-formed.
+        let mut want = want_minimal("main");
+        want.dismiss_stale_reviews = Some(false);
+        let body = branch_protection_body(&want, Some(&realistic_actual()));
+        let pr = &body["required_pull_request_reviews"];
+        assert_eq!(pr["dismiss_stale_reviews"], json!(false), "user override applied");
+        assert_eq!(pr["required_approving_review_count"], json!(3), "count inherited from actual");
     }
 
     #[test]
