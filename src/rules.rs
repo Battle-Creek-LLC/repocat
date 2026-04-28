@@ -9,6 +9,7 @@ pub enum Action {
     PatchRepo { summary: String, body: Value },
     PutBranchProtection { summary: String, branch: String, body: Value },
     SimplePut { summary: String, path: String },
+    PutJson { summary: String, path: String, body: Value },
 }
 
 impl Action {
@@ -17,6 +18,7 @@ impl Action {
             Action::PatchRepo { summary, .. } => summary,
             Action::PutBranchProtection { summary, .. } => summary,
             Action::SimplePut { summary, .. } => summary,
+            Action::PutJson { summary, .. } => summary,
         }
     }
 
@@ -30,6 +32,9 @@ impl Action {
             }
             Action::SimplePut { path, .. } => {
                 client.put_no_body(path)?;
+            }
+            Action::PutJson { path, body, .. } => {
+                client.put_json(path, body)?;
             }
         }
         Ok(())
@@ -103,8 +108,50 @@ pub fn run_all(client: &Client, org: &str, name: &str, cfg: &RepoConfig) -> Resu
     findings.push(required_files(client, org, name, cfg)?);
     findings.push(codeowners(client, org, name, cfg)?);
     findings.push(dependabot_security(client, org, name, cfg)?);
+    findings.push(workflow_permissions(client, org, name, cfg)?);
 
     Ok(findings)
+}
+
+fn workflow_permissions(client: &Client, org: &str, repo: &str, cfg: &RepoConfig) -> Result<Finding> {
+    let mut f = Finding::new("workflow_permissions", Severity::Error, "AC-6, SR-3");
+    let Some(want) = cfg.actions.as_ref() else {
+        return Ok(f.skip("no actions block configured"));
+    };
+    if want.default_workflow_permissions.is_none() && want.can_approve_pull_request_reviews.is_none() {
+        return Ok(f.skip("no actions fields configured"));
+    }
+
+    let actual = client.get_workflow_permissions(org, repo)?;
+    let mut body = serde_json::Map::new();
+
+    if let Some(want_perm) = want.default_workflow_permissions.as_deref() {
+        if want_perm != actual.default_workflow_permissions {
+            f.fail(format!(
+                "default_workflow_permissions: want {want_perm}, got {}",
+                actual.default_workflow_permissions
+            ));
+            body.insert("default_workflow_permissions".into(), json!(want_perm));
+        }
+    }
+    if let Some(want_approve) = want.can_approve_pull_request_reviews {
+        if want_approve != actual.can_approve_pull_request_reviews {
+            f.fail(format!(
+                "can_approve_pull_request_reviews: want {want_approve}, got {}",
+                actual.can_approve_pull_request_reviews
+            ));
+            body.insert("can_approve_pull_request_reviews".into(), json!(want_approve));
+        }
+    }
+
+    if !body.is_empty() {
+        f.actions.push(Action::PutJson {
+            summary: "update workflow permissions".into(),
+            path: format!("/repos/{org}/{repo}/actions/permissions/workflow"),
+            body: Value::Object(body),
+        });
+    }
+    Ok(f)
 }
 
 fn dependabot_security(client: &Client, org: &str, repo: &str, cfg: &RepoConfig) -> Result<Finding> {

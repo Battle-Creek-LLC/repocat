@@ -26,6 +26,16 @@ pub struct RepoConfig {
     pub required_files: Vec<String>,
     #[serde(default)]
     pub codeowners: Option<bool>,
+    #[serde(default)]
+    pub actions: Option<ActionsSettings>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ActionsSettings {
+    #[serde(default)]
+    pub default_workflow_permissions: Option<String>,
+    #[serde(default)]
+    pub can_approve_pull_request_reviews: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
