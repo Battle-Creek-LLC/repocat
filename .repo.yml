@@ -23,7 +23,7 @@ repos:
       required_status_checks: []
       block_force_push: true
       block_deletions: true
-      signed_commits: false  # flip to true once commit signing is set up locally
+      signed_commits: true
 
     merge:
       allow_squash: true
