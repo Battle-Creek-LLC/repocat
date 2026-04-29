@@ -2,6 +2,7 @@ mod api;
 mod auth;
 mod config;
 mod output;
+mod resolve;
 mod rules;
 
 use anyhow::{anyhow, Result};
@@ -142,9 +143,9 @@ fn run(mode: Mode, raw_args: &[String]) -> Result<ExitCode> {
     let mut all_findings: Vec<(String, Vec<Finding>)> = Vec::new();
 
     for name in target_repos(&cfg, &args)? {
-        let repo_cfg = &cfg.repos[name];
+        let repo_cfg = resolve::effective(&cfg.defaults, &cfg.repos[name]);
         eprintln!("\n=== {}/{name} ===", cfg.org);
-        let findings = rules::run_all(&client, &cfg.org, name, repo_cfg)?;
+        let findings = rules::run_all(&client, &cfg.org, name, &repo_cfg)?;
 
         if findings.iter().any(|f| f.status == Status::Fail && f.severity == Severity::Error) {
             any_error = true;
@@ -186,7 +187,7 @@ fn preflight_scopes(client: &api::Client, cfg: &Config, args: &Args) -> Result<(
     let needs_workflow = target_repos(cfg, args)?
         .iter()
         .any(|name| {
-            cfg.repos[*name]
+            resolve::effective(&cfg.defaults, &cfg.repos[*name])
                 .actions
                 .as_ref()
                 .and_then(|a| a.require_dependency_review_action)
