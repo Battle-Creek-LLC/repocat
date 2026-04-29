@@ -292,7 +292,7 @@ fn workflow_yaml(
     let mut has_dep_review_action = false;
     for entry in workflow_files {
         let Some(content) = client.get_file_content(org, repo, &entry.path)? else { continue };
-        let parsed: serde_yml::Value = match serde_yml::from_str(&content) {
+        let parsed: serde_yaml_ng::Value = match serde_yaml_ng::from_str(&content) {
             Ok(v) => v,
             Err(e) => {
                 f.fail(format!("{}: yaml parse error: {e}", entry.name));
@@ -340,7 +340,7 @@ fn dependency_graph_enabled(actual: &ActualRepo) -> bool {
     }
 }
 
-fn uses_dependency_review_action(yml: &serde_yml::Value) -> bool {
+fn uses_dependency_review_action(yml: &serde_yaml_ng::Value) -> bool {
     let Some(jobs) = yml.get("jobs").and_then(|j| j.as_mapping()) else { return false };
     for (_, job) in jobs {
         let Some(steps) = job.get("steps").and_then(|s| s.as_sequence()) else { continue };
@@ -357,7 +357,7 @@ fn uses_dependency_review_action(yml: &serde_yml::Value) -> bool {
     false
 }
 
-fn check_action_pins(yml: &serde_yml::Value, file: &str, f: &mut Finding) {
+fn check_action_pins(yml: &serde_yaml_ng::Value, file: &str, f: &mut Finding) {
     let Some(jobs) = yml.get("jobs").and_then(|j| j.as_mapping()) else { return };
     for (job_name, job) in jobs {
         let job_label = job_name.as_str().unwrap_or("?");
@@ -391,7 +391,7 @@ fn check_one_use(uses: &str, file: &str, job: &str, step: Option<usize>, f: &mut
     }
 }
 
-fn check_workflow_permissions_block(yml: &serde_yml::Value, file: &str, f: &mut Finding) {
+fn check_workflow_permissions_block(yml: &serde_yaml_ng::Value, file: &str, f: &mut Finding) {
     if yml.get("permissions").is_some() {
         return;
     }

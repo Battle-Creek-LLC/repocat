@@ -126,7 +126,7 @@ impl RepoConfig {
 pub fn load(path: &Path) -> Result<Config> {
     let text = fs::read_to_string(path)
         .with_context(|| format!("reading {}", path.display()))?;
-    let cfg: Config = serde_yml::from_str(&text)
+    let cfg: Config = serde_yaml_ng::from_str(&text)
         .with_context(|| format!("parsing {}", path.display()))?;
     if cfg.org.trim().is_empty() {
         return Err(anyhow!("`org:` is required at the top of {}", path.display()));

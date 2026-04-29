@@ -54,7 +54,7 @@ mod tests {
             let yaml = p.template().replace("{{ORG}}", "ExampleOrg");
             // repos is empty in templates, so we test parsing directly without
             // going through config::load (which requires non-empty repos).
-            let cfg: crate::config::Config = serde_yml::from_str(&yaml)
+            let cfg: crate::config::Config = serde_yaml_ng::from_str(&yaml)
                 .unwrap_or_else(|e| panic!("{p:?} failed to parse: {e}"));
             assert_eq!(cfg.org, "ExampleOrg");
             assert!(!cfg.defaults.is_empty(), "{p:?} defaults are empty");
