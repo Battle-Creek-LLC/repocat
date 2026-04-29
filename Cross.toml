@@ -1,0 +1,8 @@
+# cross uses a per-target Docker image, so the host-level apt install in
+# release.yml doesn't reach inside the container. Install libdbus-1-dev for
+# the foreign architecture before the cross-compile starts.
+[target.aarch64-unknown-linux-gnu]
+pre-build = [
+    "dpkg --add-architecture $CROSS_DEB_ARCH",
+    "apt-get update && apt-get install --assume-yes libdbus-1-dev:$CROSS_DEB_ARCH pkg-config",
+]
