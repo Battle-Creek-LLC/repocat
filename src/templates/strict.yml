@@ -48,12 +48,15 @@ defaults:
     require_dependency_review_action: true    # PRs blocked on vulnerable new deps
 
   # Files repocat will check exist on the default branch (CM-2 baseline config).
+  # CODEOWNERS is intentionally absent here — the dedicated `codeowners` rule
+  # below resolves it from `.github/CODEOWNERS`, which is GitHub's recommended
+  # location. Listing it here would force it to the repo root and contradict
+  # that rule for any repo following the convention.
   required_files:
     - README.md
     - LICENSE
     - .gitignore
     - SECURITY.md
-    - CODEOWNERS
 
   # Require a CODEOWNERS file with at least one ownership rule (CM-3, AC-5).
   codeowners: true
