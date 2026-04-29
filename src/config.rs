@@ -137,8 +137,7 @@ pub fn load(path: &Path) -> Result<Config> {
             path.display()
         ));
     }
-    if cfg.repos.is_empty() {
-        return Err(anyhow!("`repos:` map is empty in {}", path.display()));
-    }
+    // `repos:` may be empty right after `init` — callers that need at least
+    // one repo (audit/diff/apply) should check separately.
     Ok(cfg)
 }
