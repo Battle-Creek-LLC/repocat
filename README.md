@@ -5,22 +5,62 @@ either reports drift (`audit`) or reconciles it (`apply`).
 
 ## Install
 
-Prebuilt binaries for Linux, macOS, and Windows are attached to each release.
-Pick the archive matching your platform (`x86_64-unknown-linux-gnu`,
-`aarch64-unknown-linux-gnu`, `x86_64-apple-darwin`, `aarch64-apple-darwin`, or
-`x86_64-pc-windows-msvc`):
+Prebuilt binaries are attached to each [release](https://github.com/Battle-Creek-LLC/repocat/releases).
+Each archive ships a single `repocat` (or `repocat.exe`) binary plus a
+matching `.sha256` checksum.
+
+### macOS (Apple Silicon)
 
 ```sh
-gh release download --pattern '*<your-platform>*' -R Battle-Creek-LLC/repocat
-tar -xzf repocat-*.tar.gz
-mv repocat /usr/local/bin/
+gh release download --pattern 'repocat-aarch64-apple-darwin.tar.gz' -R Battle-Creek-LLC/repocat
+tar -xzf repocat-aarch64-apple-darwin.tar.gz
+sudo mv repocat /usr/local/bin/
 ```
 
-Or build from source:
+### macOS (Intel)
+
+```sh
+gh release download --pattern 'repocat-x86_64-apple-darwin.tar.gz' -R Battle-Creek-LLC/repocat
+tar -xzf repocat-x86_64-apple-darwin.tar.gz
+sudo mv repocat /usr/local/bin/
+```
+
+> Binaries aren't notarized. On first run macOS may block them — clear the
+> quarantine attribute with `xattr -d com.apple.quarantine /usr/local/bin/repocat`.
+
+### Linux (x86_64)
+
+```sh
+gh release download --pattern 'repocat-x86_64-unknown-linux-gnu.tar.gz' -R Battle-Creek-LLC/repocat
+tar -xzf repocat-x86_64-unknown-linux-gnu.tar.gz
+sudo mv repocat /usr/local/bin/
+```
+
+### Linux (ARM64)
+
+```sh
+gh release download --pattern 'repocat-aarch64-unknown-linux-gnu.tar.gz' -R Battle-Creek-LLC/repocat
+tar -xzf repocat-aarch64-unknown-linux-gnu.tar.gz
+sudo mv repocat /usr/local/bin/
+```
+
+### Windows (PowerShell)
+
+```powershell
+gh release download --pattern 'repocat-x86_64-pc-windows-msvc.zip' -R Battle-Creek-LLC/repocat
+Expand-Archive repocat-x86_64-pc-windows-msvc.zip -DestinationPath .
+# Move repocat.exe into a directory on your PATH, e.g.:
+Move-Item repocat.exe "$env:USERPROFILE\bin\"
+```
+
+### From source
 
 ```sh
 cargo install --git https://github.com/Battle-Creek-LLC/repocat
 ```
+
+On Linux the `keyring` crate needs `libdbus-1-dev` and `pkg-config` installed
+(`sudo apt-get install libdbus-1-dev pkg-config` on Debian/Ubuntu).
 
 ## Status
 
