@@ -11,11 +11,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `init --preset strict` no longer ships a `required_files` list that
   contradicts the `codeowners` rule. The strict template previously listed
-  `CODEOWNERS` under `required_files` (a literal repo-root path check) while
-  also enabling the `codeowners` rule (which reads `.github/CODEOWNERS`).
+  bare `CODEOWNERS` under `required_files` (a literal repo-root path check)
+  while also enabling the `codeowners` rule (which reads `.github/CODEOWNERS`).
   Repos following GitHub's recommended `.github/CODEOWNERS` convention would
-  permanently fail `required_files` while passing `codeowners`. Dropped the
-  redundant entry; the dedicated rule already verifies presence and content.
+  permanently fail `required_files` while passing `codeowners`. Corrected
+  the entry to `.github/CODEOWNERS` so both rules check the same path.
   ([#27](https://github.com/Battle-Creek-LLC/repocat/issues/27))
 
 ## [0.1.1] — 2026-04-29
