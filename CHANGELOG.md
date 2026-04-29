@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.2] — 2026-04-29
+
+### Fixed
+
+- `init --preset strict` no longer ships a `required_files` list that
+  contradicts the `codeowners` rule. The strict template previously listed
+  bare `CODEOWNERS` under `required_files` (a literal repo-root path check)
+  while also enabling the `codeowners` rule (which reads `.github/CODEOWNERS`).
+  Repos following GitHub's recommended `.github/CODEOWNERS` convention would
+  permanently fail `required_files` while passing `codeowners`. Corrected
+  the entry to `.github/CODEOWNERS` so both rules check the same path.
+  ([#27](https://github.com/Battle-Creek-LLC/repocat/issues/27))
+
 ## [0.1.1] — 2026-04-29
 
 ### Security
@@ -45,5 +58,6 @@ covering ten built-in rules with NIST 800-53 control mappings.
 - Prebuilt binaries on each tagged release for Linux (x86_64, aarch64), macOS
   (x86_64, aarch64), and Windows (x86_64).
 
+[0.1.2]: https://github.com/Battle-Creek-LLC/repocat/releases/tag/v0.1.2
 [0.1.1]: https://github.com/Battle-Creek-LLC/repocat/releases/tag/v0.1.1
 [0.1.0]: https://github.com/Battle-Creek-LLC/repocat/releases/tag/v0.1.0
