@@ -321,8 +321,6 @@ struct AutomatedSecurityFixes {
 
 #[derive(Debug, Deserialize)]
 pub struct Repo {
-    pub full_name: String,
-    pub default_branch: String,
     #[serde(default)]
     pub private: bool,
     #[serde(default)]
