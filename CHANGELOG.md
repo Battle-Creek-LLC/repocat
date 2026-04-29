@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.1] — 2026-04-29
+
+### Security
+
+- Replace the unmaintained `serde_yml` crate (and its `libyml` dependency)
+  with the community-maintained [`serde_yaml_ng`](https://crates.io/crates/serde_yaml_ng)
+  fork. Closes two open Dependabot advisories: [GHSA-gfxp-f68g-8x78][]
+  (high — `libyml::string::yaml_string_extend` is unsound) and
+  [GHSA-hhw4-xg65-fp2x][] (medium — `serde_yml` crate is unmaintained).
+  YAML parsing behavior is unchanged; this is a drop-in API swap.
+
+[GHSA-gfxp-f68g-8x78]: https://github.com/advisories/GHSA-gfxp-f68g-8x78
+[GHSA-hhw4-xg65-fp2x]: https://github.com/advisories/GHSA-hhw4-xg65-fp2x
+
 ## [0.1.0] — 2026-04-29
 
 First tagged release. The CLI is functional end-to-end against GitHub.com,
@@ -31,4 +45,5 @@ covering ten built-in rules with NIST 800-53 control mappings.
 - Prebuilt binaries on each tagged release for Linux (x86_64, aarch64), macOS
   (x86_64, aarch64), and Windows (x86_64).
 
+[0.1.1]: https://github.com/Battle-Creek-LLC/repocat/releases/tag/v0.1.1
 [0.1.0]: https://github.com/Battle-Creek-LLC/repocat/releases/tag/v0.1.0
