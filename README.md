@@ -3,6 +3,25 @@
 GitHub repository hardening CLI. Reads a declarative `.repo.yml` baseline and
 either reports drift (`audit`) or reconciles it (`apply`).
 
+## Install
+
+Prebuilt binaries for Linux, macOS, and Windows are attached to each release.
+Pick the archive matching your platform (`x86_64-unknown-linux-gnu`,
+`aarch64-unknown-linux-gnu`, `x86_64-apple-darwin`, `aarch64-apple-darwin`, or
+`x86_64-pc-windows-msvc`):
+
+```sh
+gh release download --pattern '*<your-platform>*' -R Battle-Creek-LLC/repocat
+tar -xzf repocat-*.tar.gz
+mv repocat /usr/local/bin/
+```
+
+Or build from source:
+
+```sh
+cargo install --git https://github.com/Battle-Creek-LLC/repocat
+```
+
 ## Status
 
 Early development. `audit`, `diff`, and `apply` work for these rules:
