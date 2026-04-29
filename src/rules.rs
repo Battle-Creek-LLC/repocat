@@ -169,7 +169,7 @@ pub fn run_all(client: &Client, org: &str, name: &str, cfg: &RepoConfig) -> Resu
     findings.push(codeowners(client, org, name, cfg)?);
     findings.push(dependabot_security(client, org, name, cfg, &actual_repo)?);
     findings.push(workflow_permissions(client, org, name, cfg)?);
-    findings.push(workflow_yaml(client, org, name, cfg)?);
+    findings.push(workflow_yaml(client, org, name, cfg, &actual_repo)?);
     findings.push(signed_commits(client, org, name, cfg)?);
     findings.push(teams_only_access(client, org, name, cfg)?);
 
@@ -234,16 +234,39 @@ fn signed_commits(client: &Client, org: &str, repo: &str, cfg: &RepoConfig) -> R
     Ok(f)
 }
 
-fn workflow_yaml(client: &Client, org: &str, repo: &str, cfg: &RepoConfig) -> Result<Finding> {
+fn workflow_yaml(
+    client: &Client,
+    org: &str,
+    repo: &str,
+    cfg: &RepoConfig,
+    actual_repo: &ActualRepo,
+) -> Result<Finding> {
     let mut f = Finding::new("workflow_yaml", Severity::Error, "AC-6, SR-3");
     let Some(want) = cfg.actions.as_ref() else {
         return Ok(f.skip("no actions block configured"));
     };
     let pin = want.pin_actions_to_sha == Some(true);
     let perms = want.require_workflow_permissions == Some(true);
-    let dep_review = want.require_dependency_review_action == Some(true);
+    let dep_review_wanted = want.require_dependency_review_action == Some(true);
+
+    // dependency-review-action requires the dependency graph, which on private
+    // repos is gated behind GitHub Advanced Security. Scaffolding the workflow
+    // anyway commits a file that fails on every PR — so on private repos
+    // without GHAS, treat the dep-review portion of this rule as skipped.
+    let dep_review_blocked_by_ghas =
+        dep_review_wanted && !dependency_graph_enabled(actual_repo);
+    let dep_review = dep_review_wanted && !dep_review_blocked_by_ghas;
+    let ghas_skip_msg =
+        "dep-review action requires GHAS on private repos; \
+         enable GHAS or remove require_dependency_review_action for this repo";
+
     if !pin && !perms && !dep_review {
-        return Ok(f.skip("no workflow yaml checks configured"));
+        let skipped = if dep_review_blocked_by_ghas {
+            f.skip(ghas_skip_msg)
+        } else {
+            f.skip("no workflow yaml checks configured")
+        };
+        return Ok(skipped);
     }
 
     let entries = client.list_directory(org, repo, ".github/workflows")?;
@@ -259,7 +282,11 @@ fn workflow_yaml(client: &Client, org: &str, repo: &str, cfg: &RepoConfig) -> Re
             });
             return Ok(f);
         }
-        return Ok(f.skip("no .github/workflows/*.yml files"));
+        let mut skipped = f.skip("no .github/workflows/*.yml files");
+        if dep_review_blocked_by_ghas {
+            skipped.messages.push(ghas_skip_msg.into());
+        }
+        return Ok(skipped);
     }
 
     let mut has_dep_review_action = false;
@@ -293,7 +320,24 @@ fn workflow_yaml(client: &Client, org: &str, repo: &str, cfg: &RepoConfig) -> Re
     if f.status == Status::Fail && f.actions.is_empty() {
         f.messages.push("no automatic remediation — fix workflow files via PR".into());
     }
+    if dep_review_blocked_by_ghas {
+        f.messages.push(ghas_skip_msg.into());
+    }
     Ok(f)
+}
+
+// Public repos have the dependency graph implicitly enabled but the API omits
+// the field from the response; treat absence as enabled. On private repos the
+// graph is gated behind GHAS, so absence means disabled.
+fn dependency_graph_enabled(actual: &ActualRepo) -> bool {
+    let echoed = actual
+        .security_and_analysis
+        .as_ref()
+        .and_then(|s| s.dependency_graph.as_ref());
+    match echoed {
+        Some(t) => t.is_enabled(),
+        None => !actual.private,
+    }
 }
 
 fn uses_dependency_review_action(yml: &serde_yml::Value) -> bool {
@@ -441,17 +485,7 @@ fn dependabot_security(
     }
 
     if want.dependency_graph == Some(true) {
-        let echoed = actual_repo
-            .security_and_analysis
-            .as_ref()
-            .and_then(|s| s.dependency_graph.as_ref());
-        // Public repos have the dependency graph implicitly enabled but the
-        // API omits the field from the response; treat absence as enabled.
-        let on = match echoed {
-            Some(t) => t.is_enabled(),
-            None => !actual_repo.private,
-        };
-        if !on {
+        if !dependency_graph_enabled(actual_repo) {
             f.fail("dependency_graph not enabled (private repo without GitHub Advanced Security?)");
             f.actions.push(Action::PatchRepo {
                 summary: "enable dependency graph".into(),
@@ -907,6 +941,49 @@ fn check_and_patch(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::api::{SecurityAndAnalysis, Toggle};
+
+    fn repo(private: bool, dep_graph: Option<&str>) -> ActualRepo {
+        ActualRepo {
+            private,
+            allow_squash_merge: None,
+            allow_merge_commit: None,
+            allow_rebase_merge: None,
+            delete_branch_on_merge: None,
+            security_and_analysis: dep_graph.map(|status| SecurityAndAnalysis {
+                secret_scanning: None,
+                secret_scanning_push_protection: None,
+                dependency_graph: Some(Toggle { status: Some(status.into()) }),
+            }),
+        }
+    }
+
+    #[test]
+    fn dep_graph_public_repo_implicit_on() {
+        // GitHub omits security_and_analysis on public repos; treat as enabled.
+        assert!(dependency_graph_enabled(&repo(false, None)));
+    }
+
+    #[test]
+    fn dep_graph_private_repo_without_ghas_is_off() {
+        // Absence on private repos = no GHAS, so dependency graph is unavailable.
+        assert!(!dependency_graph_enabled(&repo(true, None)));
+    }
+
+    #[test]
+    fn dep_graph_private_repo_with_ghas_enabled() {
+        assert!(dependency_graph_enabled(&repo(true, Some("enabled"))));
+    }
+
+    #[test]
+    fn dep_graph_private_repo_with_ghas_disabled() {
+        assert!(!dependency_graph_enabled(&repo(true, Some("disabled"))));
+    }
+
+    #[test]
+    fn dep_graph_public_repo_explicitly_enabled() {
+        assert!(dependency_graph_enabled(&repo(false, Some("enabled"))));
+    }
 
     fn want_minimal(branch: &str) -> DesiredBp {
         DesiredBp {
