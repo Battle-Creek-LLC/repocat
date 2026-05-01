@@ -39,6 +39,7 @@ defaults:
     push_protection: true
     vulnerability_alerts: true
     dependabot_security_updates: true
+    dependabot_config: true
     dependency_graph: true
 
   # GitHub Actions defaults (AC-6 least privilege, SR-3 supply chain).
