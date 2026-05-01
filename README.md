@@ -62,6 +62,31 @@ cargo install --git https://github.com/Battle-Creek-LLC/repocat
 On Linux the `keyring` crate needs `libdbus-1-dev` and `pkg-config` installed
 (`sudo apt-get install libdbus-1-dev pkg-config` on Debian/Ubuntu).
 
+## Getting started
+
+`repocat` is driven by a `.repo.yml` baseline that lists your GitHub org, the
+repos to harden, and the rules to enforce. A typical first run:
+
+```sh
+gh auth login                                # if you haven't already
+repocat init --preset standard --org my-org  # writes .repo.yml in the current dir
+repocat repo add my-repo                     # add each repo you want to harden
+repocat audit                                # report drift
+repocat diff                                 # preview what `apply` would change
+repocat apply                                # reconcile the repo to .repo.yml
+```
+
+`.repo.yml` is created and read from the current working directory — `cd` to
+wherever you want it to live, or pass `-f <path>` to point elsewhere. The
+`error: reading .repo.yml: No such file or directory` message just means you
+haven't run `init` in that directory yet.
+
+> **Stuck on an error or finding?** Paste the command, the output, and your
+> `.repo.yml` into Claude Code, Cursor, or ChatGPT and ask what to do.
+> `repocat`'s output is designed to be agent-friendly — an LLM will usually
+> translate a finding into a concrete fix faster than scanning the rule
+> reference below.
+
 ## Status
 
 Early development. `audit`, `diff`, and `apply` work for these rules:
