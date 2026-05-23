@@ -15,6 +15,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   private repos, where SARIF→code-scanning needs GitHub Advanced Security.
   Surfaces SAST findings in the same place CodeQL would (SA-11, RA-5).
 
+### Packaging
+
+- Published to crates.io as **`bcl-repocat`** (the `repocat` name is taken by an
+  unrelated crate). `cargo install bcl-repocat` installs the `repocat` binary.
+
 ## [0.1.2] — 2026-04-29
 
 ### Fixed
