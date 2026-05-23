@@ -5,62 +5,46 @@ either reports drift (`audit`) or reconciles it (`apply`).
 
 ## Install
 
-Prebuilt binaries are attached to each [release](https://github.com/Battle-Creek-LLC/repocat/releases).
-Each archive ships a single `repocat` (or `repocat.exe`) binary plus a
-matching `.sha256` checksum.
+### crates.io (recommended)
 
-### macOS (Apple Silicon)
+```sh
+cargo install bcl-repocat
+```
+
+Installs the `repocat` binary. The crate is published as **`bcl-repocat`**
+(`repocat` was already taken on crates.io by an unrelated project) — the command
+is still `repocat`.
+
+On Linux the `keyring` crate needs `libdbus-1-dev` and `pkg-config`
+(`sudo apt-get install libdbus-1-dev pkg-config` on Debian/Ubuntu).
+
+### Prebuilt binary (no compile)
+
+With [`cargo-binstall`](https://github.com/cargo-bins/cargo-binstall):
+
+```sh
+cargo binstall bcl-repocat
+```
+
+Or download an archive directly from a
+[release](https://github.com/Battle-Creek-LLC/repocat/releases) — each ships a
+single `repocat` (or `repocat.exe`) binary plus a `.sha256` checksum:
 
 ```sh
 gh release download --pattern 'repocat-aarch64-apple-darwin.tar.gz' -R Battle-Creek-LLC/repocat
-tar -xzf repocat-aarch64-apple-darwin.tar.gz
-sudo mv repocat /usr/local/bin/
+tar -xzf repocat-aarch64-apple-darwin.tar.gz && sudo mv repocat /usr/local/bin/
 ```
 
-### macOS (Intel)
-
-```sh
-gh release download --pattern 'repocat-x86_64-apple-darwin.tar.gz' -R Battle-Creek-LLC/repocat
-tar -xzf repocat-x86_64-apple-darwin.tar.gz
-sudo mv repocat /usr/local/bin/
-```
-
-> Binaries aren't notarized. On first run macOS may block them — clear the
-> quarantine attribute with `xattr -d com.apple.quarantine /usr/local/bin/repocat`.
-
-### Linux (x86_64)
-
-```sh
-gh release download --pattern 'repocat-x86_64-unknown-linux-gnu.tar.gz' -R Battle-Creek-LLC/repocat
-tar -xzf repocat-x86_64-unknown-linux-gnu.tar.gz
-sudo mv repocat /usr/local/bin/
-```
-
-### Linux (ARM64)
-
-```sh
-gh release download --pattern 'repocat-aarch64-unknown-linux-gnu.tar.gz' -R Battle-Creek-LLC/repocat
-tar -xzf repocat-aarch64-unknown-linux-gnu.tar.gz
-sudo mv repocat /usr/local/bin/
-```
-
-### Windows (PowerShell)
-
-```powershell
-gh release download --pattern 'repocat-x86_64-pc-windows-msvc.zip' -R Battle-Creek-LLC/repocat
-Expand-Archive repocat-x86_64-pc-windows-msvc.zip -DestinationPath .
-# Move repocat.exe into a directory on your PATH, e.g.:
-Move-Item repocat.exe "$env:USERPROFILE\bin\"
-```
+Targets: `aarch64-apple-darwin`, `x86_64-apple-darwin`,
+`x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`,
+`x86_64-pc-windows-msvc` (`.zip`). macOS binaries aren't notarized — clear the
+quarantine attribute with `xattr -d com.apple.quarantine /usr/local/bin/repocat`.
 
 ### From source
 
 ```sh
 cargo install --git https://github.com/Battle-Creek-LLC/repocat
 ```
-
-On Linux the `keyring` crate needs `libdbus-1-dev` and `pkg-config` installed
-(`sudo apt-get install libdbus-1-dev pkg-config` on Debian/Ubuntu).
 
 ## Getting started
 

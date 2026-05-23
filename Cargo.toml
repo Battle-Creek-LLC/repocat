@@ -1,7 +1,23 @@
 [package]
-name = "repocat"
+name = "bcl-repocat"
 version = "0.1.3"
 edition = "2024"
+description = "GitHub repository hardening CLI — audits and reconciles repos against a declarative .repo.yml security baseline."
+license = "MIT"
+repository = "https://github.com/Battle-Creek-LLC/repocat"
+readme = "README.md"
+categories = ["command-line-utilities", "development-tools"]
+keywords = ["github", "security", "hardening", "compliance", "cli"]
+
+# Published to crates.io as `bcl-repocat`; the installed binary stays `repocat`.
+[[bin]]
+name = "repocat"
+path = "src/main.rs"
+
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/repocat-{ target }.tar.gz"
+pkg-fmt = "tgz"
+bin-dir = "repocat{ binary-ext }"
 
 [dependencies]
 keyring = { version = "3", features = ["apple-native", "linux-native", "sync-secret-service"] }
