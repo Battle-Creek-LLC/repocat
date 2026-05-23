@@ -14,7 +14,30 @@ permissions:
   contents: read
 
 jobs:
+  # Tag-push runs can't rely on taiki-e/upload-rust-binary-action to *create*
+  # the release (the repo's default workflow token is read-only per the repocat
+  # baseline, and the action's create path 401s). Create it here first with an
+  # explicit contents:write token; the upload jobs then only attach assets to an
+  # existing release. Idempotent — a no-op if the release already exists.
+  create-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+      - name: Create release if missing
+        # Pass context data through env vars (not inline ${{ }} in run:) to avoid
+        # shell script injection — flagged by our own Semgrep code scanning.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          gh release view "$TAG" -R "$REPO" >/dev/null 2>&1 \
+            || gh release create "$TAG" -R "$REPO" --title "$TAG" --generate-notes --verify-tag
+
   upload-assets:
+    needs: create-release
     name: ${{ matrix.target }}
     permissions:
       contents: write
