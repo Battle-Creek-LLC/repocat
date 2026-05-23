@@ -26,13 +26,15 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
       - name: Create release if missing
+        # Pass context data through env vars (not inline ${{ }} in run:) to avoid
+        # shell script injection — flagged by our own Semgrep code scanning.
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+          REPO: ${{ github.repository }}
         run: |
-          TAG="${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}"
-          gh release view "$TAG" -R "${{ github.repository }}" >/dev/null 2>&1 \
-            || gh release create "$TAG" -R "${{ github.repository }}" \
-                 --title "$TAG" --generate-notes --verify-tag
+          gh release view "$TAG" -R "$REPO" >/dev/null 2>&1 \
+            || gh release create "$TAG" -R "$REPO" --title "$TAG" --generate-notes --verify-tag
 
   upload-assets:
     needs: create-release
