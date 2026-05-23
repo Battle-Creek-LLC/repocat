@@ -12,6 +12,7 @@ pub enum Action {
     SimplePost { summary: String, path: String },
     PutJson { summary: String, path: String, body: Value },
     ScaffoldDependencyReviewWorkflow { summary: String },
+    ScaffoldSemgrepWorkflow { summary: String },
 }
 
 impl Action {
@@ -23,6 +24,7 @@ impl Action {
             Action::SimplePost { summary, .. } => summary,
             Action::PutJson { summary, .. } => summary,
             Action::ScaffoldDependencyReviewWorkflow { summary } => summary,
+            Action::ScaffoldSemgrepWorkflow { summary } => summary,
         }
     }
 
@@ -45,6 +47,9 @@ impl Action {
             }
             Action::ScaffoldDependencyReviewWorkflow { .. } => {
                 scaffold_dependency_review_workflow(client, org, repo)?;
+            }
+            Action::ScaffoldSemgrepWorkflow { .. } => {
+                scaffold_semgrep_workflow(client, org, repo)?;
             }
         }
         Ok(())
@@ -89,6 +94,68 @@ fn scaffold_dependency_review_workflow(client: &Client, org: &str, repo: &str) -
             // GitHub returns 404 (not 403) when an OAuth token lacks the `workflow`
             // scope but tries to write under .github/workflows/. Translate so users
             // know what to do instead of chasing a misleading 404.
+            if e.to_string().contains("404") {
+                anyhow::anyhow!(
+                    "writing to .github/workflows/ requires the `workflow` OAuth \
+                     scope, which the gh CLI does not request by default. Run \
+                     `gh auth refresh -s workflow` and retry. Underlying error: {e}"
+                )
+            } else {
+                e
+            }
+        })
+}
+
+fn scaffold_semgrep_workflow(client: &Client, org: &str, repo: &str) -> Result<()> {
+    let path = ".github/workflows/semgrep.yml";
+    if client.path_exists(org, repo, path)? {
+        return Err(anyhow::anyhow!(
+            "{path} already exists; refusing to overwrite — \
+             remove or update it manually if it doesn't satisfy the rule"
+        ));
+    }
+    let checkout_sha = client.latest_action_sha("actions", "checkout")?;
+    let codeql_sha = client.latest_action_sha("github", "codeql-action")?;
+    // Runs Semgrep's OSS rulesets via pipx (preinstalled on ubuntu runners — no
+    // container/node interplay) and uploads SARIF to GitHub code scanning, where
+    // the secops `si-weekly-vuln-review` control captures it. pinned to SHAs to
+    // satisfy the pin_actions_to_sha rule.
+    let content = format!(
+        r#"name: Semgrep
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "0 6 * * 1"
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  semgrep:
+    name: semgrep
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@{checkout_sha}
+      - run: pipx run semgrep scan --config p/default --config p/secrets --sarif --output semgrep.sarif
+      - uses: github/codeql-action/upload-sarif@{codeql_sha}
+        if: always()
+        with:
+          sarif_file: semgrep.sarif
+"#
+    );
+    client
+        .create_file(
+            org,
+            repo,
+            path,
+            &content,
+            "Add Semgrep code-scanning workflow (scaffolded by repocat)",
+        )
+        .map_err(|e| {
             if e.to_string().contains("404") {
                 anyhow::anyhow!(
                     "writing to .github/workflows/ requires the `workflow` OAuth \
@@ -170,6 +237,7 @@ pub fn run_all(client: &Client, org: &str, name: &str, cfg: &RepoConfig) -> Resu
     findings.push(dependabot_security(client, org, name, cfg, &actual_repo)?);
     findings.push(workflow_permissions(client, org, name, cfg)?);
     findings.push(workflow_yaml(client, org, name, cfg, &actual_repo)?);
+    findings.push(semgrep_workflow(client, org, name, cfg, &actual_repo)?);
     findings.push(signed_commits(client, org, name, cfg)?);
     findings.push(teams_only_access(client, org, name, cfg)?);
 
@@ -402,6 +470,43 @@ fn check_workflow_permissions_block(yml: &serde_yaml_ng::Value, file: &str, f: &
             f.fail(format!("{file}:{label}: no permissions block (top-level or job-level)"));
         }
     }
+}
+
+// Static analysis (SAST) via Semgrep, uploaded to GitHub code scanning. Detected
+// by the presence of .github/workflows/semgrep.yml (the path this rule
+// scaffolds). SARIF upload to code scanning is free on public repos but needs
+// GitHub Advanced Security on private repos — so on private repos this rule
+// skips rather than committing a workflow whose upload step fails every run.
+// Set `require_semgrep_workflow: false` per-repo to opt out (e.g. repos with no
+// scannable code).
+fn semgrep_workflow(
+    client: &Client,
+    org: &str,
+    repo: &str,
+    cfg: &RepoConfig,
+    actual_repo: &ActualRepo,
+) -> Result<Finding> {
+    let mut f = Finding::new("semgrep_workflow", Severity::Error, "SA-11, RA-5");
+    let Some(want) = cfg.actions.as_ref() else {
+        return Ok(f.skip("no actions block configured"));
+    };
+    if want.require_semgrep_workflow != Some(true) {
+        return Ok(f.skip("require_semgrep_workflow not set"));
+    }
+    if actual_repo.private {
+        return Ok(f.skip(
+            "semgrep SARIF→code-scanning needs GHAS on private repos; \
+             enable GHAS or set require_semgrep_workflow: false for this repo",
+        ));
+    }
+    let path = ".github/workflows/semgrep.yml";
+    if !client.path_exists(org, repo, path)? {
+        f.fail("require_semgrep_workflow set, but .github/workflows/semgrep.yml is missing");
+        f.actions.push(Action::ScaffoldSemgrepWorkflow {
+            summary: "scaffold .github/workflows/semgrep.yml".into(),
+        });
+    }
+    Ok(f)
 }
 
 fn workflow_permissions(client: &Client, org: &str, repo: &str, cfg: &RepoConfig) -> Result<Finding> {

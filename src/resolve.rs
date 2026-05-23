@@ -99,6 +99,9 @@ fn overlay_actions(d: &ActionsSettings, r: &ActionsSettings) -> ActionsSettings 
         require_dependency_review_action: r
             .require_dependency_review_action
             .or(d.require_dependency_review_action),
+        require_semgrep_workflow: r
+            .require_semgrep_workflow
+            .or(d.require_semgrep_workflow),
     }
 }
 

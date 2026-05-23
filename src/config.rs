@@ -50,6 +50,8 @@ pub struct ActionsSettings {
     pub require_workflow_permissions: Option<bool>,
     #[serde(default)]
     pub require_dependency_review_action: Option<bool>,
+    #[serde(default)]
+    pub require_semgrep_workflow: Option<bool>,
 }
 
 #[derive(Debug, Default, Deserialize, Clone)]
