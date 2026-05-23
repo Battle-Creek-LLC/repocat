@@ -1,6 +1,6 @@
 [package]
 name = "bcl-repocat"
-version = "0.1.3"
+version = "0.2.0"
 edition = "2024"
 description = "GitHub repository hardening CLI — audits and reconciles repos against a declarative .repo.yml security baseline."
 license = "MIT"

@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] — 2026-05-23
+
+### Changed
+
+- Release workflow now self-creates the GitHub release on tag push via an
+  explicit `contents: write` `create-release` job, then attaches binaries to it.
+  Fixes tag-push releases failing to create the release under the read-only
+  default workflow token enforced by the repocat baseline.
+
 ## [0.1.3] — 2026-05-23
 
 ### Added
