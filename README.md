@@ -83,8 +83,10 @@ Early development. `audit`, `diff`, and `apply` work for these rules:
 - `dependabot_security` (SI-2, SR-3) — vulnerability alerts, Dependabot security updates, optional `.github/dependabot.yml` presence
 - `workflow_permissions` (AC-6, SR-3) — repo-level default `GITHUB_TOKEN` scope and PR-approval permission
 - `workflow_yaml` (AC-6, SR-3) — audit-only; scans `.github/workflows/*.yml` for unpinned action refs and missing `permissions:` blocks
+- `semgrep_workflow` (SA-11, RA-5) — audits for `.github/workflows/semgrep.yml` and scaffolds one (Semgrep OSS rulesets → SARIF → code scanning); skips on private repos (SARIF upload needs GitHub Advanced Security)
 - `signed_commits` (SI-7) — required-signatures enforcement on the protected branch
 - `teams_only_access` (AC-2, AC-6) — audit-only; flags direct collaborators and team-permission drift
+- `org_code_security` (CM-6, SI-2, SI-4) — **org-scoped** (runs once per invocation, not per repo); manages a GitHub code security configuration and sets it as the org default for new repos. See [Upgrading](#upgrading)
 
 ## Usage
 
@@ -95,7 +97,26 @@ repocat audit --format sarif        # SARIF 2.1.0 for GitHub Code Scanning uploa
 repocat diff                        # preview changes apply would make
 repocat apply                       # reconcile to .repo.yml
 repocat apply --dry-run             # same as `diff`
+repocat changelog                   # release notes for the installed version
+repocat changelog --since 0.2.0     # only what changed since a version
+repocat changelog --upgrade         # how to upgrade + adopt new .repo.yml fields
 ```
 
 Credentials are resolved from `GH_TOKEN`/`GITHUB_TOKEN`, then the macOS
 keychain (matching the `gh` CLI), then `~/.config/gh/hosts.yml`.
+
+## Upgrading
+
+Upgrade the tool with `cargo install bcl-repocat` (add `--force` to replace an
+older build). The changelog and the `.repo.yml` migration notes are baked into
+the binary, so they always match the version you have installed:
+
+```sh
+repocat changelog            # full release notes
+repocat changelog --upgrade  # how to upgrade and adopt new .repo.yml fields
+```
+
+These are also in [`CHANGELOG.md`](CHANGELOG.md) and [`UPGRADING.md`](UPGRADING.md).
+Older versions reject `.repo.yml` files that use newer fields with an
+`unknown field` error — upgrade before adopting a new block (e.g. `org_security`,
+added in 0.3.0).

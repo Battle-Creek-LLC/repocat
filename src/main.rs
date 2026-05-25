@@ -39,6 +39,7 @@ fn main() -> ExitCode {
         "apply" => run(Mode::Apply, rest),
         "init" => run_init(rest),
         "repo" => run_repo(rest),
+        "changelog" => run_changelog(rest),
         "version" => {
             println!("repocat {}", env!("CARGO_PKG_VERSION"));
             Ok(ExitCode::SUCCESS)
@@ -67,6 +68,7 @@ fn print_usage() {
          repocat apply [<repo>...] [-f <path>] [--all] [--dry-run]\n  \
          repocat init  [--preset minimal|standard|strict] [-f <path>] [--stdout] [--force] [--org <name>]\n  \
          repocat repo add <name> [-f <path>]\n  \
+         repocat changelog [--since <version>] [--upgrade]\n  \
          repocat version\n\
          \n\
          Tip: to see every available setting with comments, run:\n  \
@@ -367,6 +369,84 @@ fn run_init(raw_args: &[String]) -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
+// `changelog` prints the release notes baked into the binary at build time, so
+// the output always matches the installed version. `--since` filters to newer
+// entries; `--upgrade` prints the consumer upgrade guide (how to update the tool
+// and adopt new `.repo.yml` fields) instead.
+const CHANGELOG: &str = include_str!("../CHANGELOG.md");
+const UPGRADING: &str = include_str!("../UPGRADING.md");
+
+fn run_changelog(raw_args: &[String]) -> Result<ExitCode> {
+    let mut since: Option<String> = None;
+    let mut upgrade = false;
+    let mut i = 0;
+    while i < raw_args.len() {
+        match raw_args[i].as_str() {
+            "--upgrade" => upgrade = true,
+            "--since" => {
+                i += 1;
+                since = Some(raw_args.get(i).ok_or_else(|| anyhow!("--since needs a value"))?.clone());
+            }
+            other => return Err(anyhow!("unknown flag for changelog: {other}")),
+        }
+        i += 1;
+    }
+    if upgrade {
+        if since.is_some() {
+            return Err(anyhow!("--since cannot be combined with --upgrade"));
+        }
+        print!("{UPGRADING}");
+        return Ok(ExitCode::SUCCESS);
+    }
+    match since {
+        None => print!("{CHANGELOG}"),
+        Some(v) => print!("{}", filter_changelog_since(CHANGELOG, &v)?),
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+// Parses a dotted "X.Y.Z" (an optional leading `v` is tolerated) into a tuple
+// for ordering. Returns None for anything that isn't three numeric components.
+fn parse_version(s: &str) -> Option<(u32, u32, u32)> {
+    let mut it = s.trim().trim_start_matches('v').split('.');
+    let major = it.next()?.parse().ok()?;
+    let minor = it.next()?.parse().ok()?;
+    let patch = it.next()?.parse().ok()?;
+    if it.next().is_some() {
+        return None;
+    }
+    Some((major, minor, patch))
+}
+
+// Extracts the version from a Keep-a-Changelog heading like `## [0.3.0] — ...`.
+fn heading_version(line: &str) -> Option<(u32, u32, u32)> {
+    let start = line.find('[')? + 1;
+    let end = line[start..].find(']')? + start;
+    parse_version(&line[start..end])
+}
+
+// Keeps the preamble (everything before the first version heading) plus every
+// section newer than `since`. The trailing link-reference block follows the
+// oldest section's keep state, which is the desired behaviour: drop it when the
+// oldest section is filtered out.
+fn filter_changelog_since(full: &str, since: &str) -> Result<String> {
+    let target = parse_version(since)
+        .ok_or_else(|| anyhow!("invalid --since version `{since}` (want X.Y.Z)"))?;
+    let mut out = String::new();
+    let mut keep = true;
+    for line in full.lines() {
+        if line.starts_with("## [") {
+            // An unparseable heading is kept rather than silently dropped.
+            keep = heading_version(line).is_none_or(|v| v > target);
+        }
+        if keep {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    Ok(out)
+}
+
 fn run_repo(raw_args: &[String]) -> Result<ExitCode> {
     let sub = raw_args.first().map(String::as_str).ok_or_else(|| {
         anyhow!("repo: missing subcommand (try `repocat repo add <name>`)")
@@ -573,6 +653,65 @@ mod text_edit_tests {
         let yml = "org: acme\ndefaults:\n  merge:\n    allow_squash: true\nrepos: {}\n";
         let out = append_repo_entry(yml, "alpha").unwrap();
         assert!(out.ends_with('\n'));
+    }
+
+    const SAMPLE_CHANGELOG: &str = "\
+# Changelog
+
+intro paragraph
+
+## [0.3.0] — 2026-05-25
+
+org_security added
+
+## [0.2.0] — 2026-05-23
+
+release workflow
+
+## [0.1.0] — 2026-04-29
+
+first release
+
+[0.3.0]: https://example/v0.3.0
+[0.2.0]: https://example/v0.2.0
+";
+
+    #[test]
+    fn parse_version_handles_v_prefix_and_rejects_non_triples() {
+        assert_eq!(parse_version("0.3.0"), Some((0, 3, 0)));
+        assert_eq!(parse_version("v1.2.3"), Some((1, 2, 3)));
+        assert_eq!(parse_version("0.3"), None);
+        assert_eq!(parse_version("0.3.0.1"), None);
+        assert_eq!(parse_version("x.y.z"), None);
+    }
+
+    #[test]
+    fn heading_version_extracts_bracketed_version() {
+        assert_eq!(heading_version("## [0.3.0] — 2026-05-25"), Some((0, 3, 0)));
+        assert_eq!(heading_version("## not a version"), None);
+    }
+
+    #[test]
+    fn changelog_since_keeps_newer_sections_and_preamble() {
+        let out = filter_changelog_since(SAMPLE_CHANGELOG, "0.2.0").unwrap();
+        assert!(out.contains("# Changelog"), "preamble kept");
+        assert!(out.contains("## [0.3.0]"), "newer section kept");
+        assert!(!out.contains("## [0.2.0]"), "equal version excluded");
+        assert!(!out.contains("## [0.1.0]"), "older section excluded");
+        // footer link refs trail the oldest (excluded) section, so they drop too
+        assert!(!out.contains("[0.2.0]: https"));
+    }
+
+    #[test]
+    fn changelog_since_rejects_invalid_version() {
+        assert!(filter_changelog_since(SAMPLE_CHANGELOG, "garbage").is_err());
+    }
+
+    #[test]
+    fn changelog_since_newer_than_all_keeps_only_preamble() {
+        let out = filter_changelog_since(SAMPLE_CHANGELOG, "9.9.9").unwrap();
+        assert!(out.contains("# Changelog"));
+        assert!(!out.contains("## ["));
     }
 }
 
