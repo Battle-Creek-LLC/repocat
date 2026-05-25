@@ -75,10 +75,10 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/{0}', inputs.tag) || '' }}
 
-  # Publish the crate to crates.io after the binaries build. Needs a
-  # CARGO_REGISTRY_TOKEN repo secret (a crates.io API token). Mirrors the other
-  # Battle-Creek-LLC crates (moot, ward); the dispatch `ref` override lets an
-  # already-pushed tag be published after the secret is added.
+  # Publish the crate to crates.io after the binaries build. Uses the org-level
+  # CRATES_IO_TOKEN secret (a crates.io API token), the same one the other
+  # Battle-Creek-LLC crates use. The dispatch `ref` override lets an
+  # already-pushed tag be published.
   publish-crate:
     name: cargo publish
     needs: upload-assets
@@ -88,4 +88,4 @@ jobs:
         with:
           ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/{0}', inputs.tag) || '' }}
       - run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
-      - run: cargo publish --locked --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
+      - run: cargo publish --locked --token ${{ secrets.CRATES_IO_TOKEN }}
