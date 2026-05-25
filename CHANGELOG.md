@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] — 2026-05-25
+
+### Added
+
+- `org_security` — repocat's first organization-scoped block. Manages a GitHub
+  code security configuration (`/orgs/{org}/code-security/configurations`) and
+  sets it as the org default for new repositories. `audit`/`diff` report whether
+  a named configuration exists with the wanted features (dependency graph,
+  Dependabot alerts and security updates, secret scanning and push protection)
+  and is the default for the configured visibility scope; `apply` creates or
+  updates it and sets the default (idempotent). Acts as the org-level backstop
+  for the per-repo `security:` block — keeping Dependency Graph enabled even when
+  it is disabled org-wide, a state the per-repo check cannot detect on public
+  repos (CM-6, SI-2, SI-4).
+- Strict preset ships an `org_security` block defaulting to all repositories.
+
+### Changed
+
+- `apply` preflight now also requires the `admin:org` scope when an
+  `org_security` block is present, failing fast with a `gh auth refresh` hint.
+
 ## [0.2.0] — 2026-05-23
 
 ### Changed
@@ -82,6 +103,8 @@ covering ten built-in rules with NIST 800-53 control mappings.
 - Prebuilt binaries on each tagged release for Linux (x86_64, aarch64), macOS
   (x86_64, aarch64), and Windows (x86_64).
 
+[0.3.0]: https://github.com/Battle-Creek-LLC/repocat/releases/tag/v0.3.0
+[0.2.0]: https://github.com/Battle-Creek-LLC/repocat/releases/tag/v0.2.0
 [0.1.2]: https://github.com/Battle-Creek-LLC/repocat/releases/tag/v0.1.2
 [0.1.1]: https://github.com/Battle-Creek-LLC/repocat/releases/tag/v0.1.1
 [0.1.0]: https://github.com/Battle-Creek-LLC/repocat/releases/tag/v0.1.0
