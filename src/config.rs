@@ -9,6 +9,44 @@ pub struct Config {
     pub defaults: RepoConfig,
     #[serde(default)]
     pub repos: BTreeMap<String, RepoConfig>,
+    /// Org-wide code security configuration. Unlike every other block, this is
+    /// not per-repo — it manages a GitHub "code security configuration" object
+    /// and the org default for new repos. Checked once per invocation.
+    #[serde(default)]
+    pub org_security: Option<OrgSecurity>,
+}
+
+/// Mirrors a GitHub org "code security configuration"
+/// (`/orgs/{org}/code-security/configurations`). Each feature is tri-state:
+/// `Some(true)` → enabled, `Some(false)` → disabled, absent → left as `not_set`
+/// (inherited from the enterprise/GitHub default) and not audited.
+#[derive(Debug, Default, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct OrgSecurity {
+    /// Name repocat uses to find and reconcile the configuration. Stable across
+    /// runs — renaming it orphans the previous configuration.
+    #[serde(default = "default_configuration_name")]
+    pub configuration_name: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    /// Repo visibility scope the configuration is set as default for. One of
+    /// `all`, `public`, `private_and_internal`, `none`.
+    #[serde(default)]
+    pub default_for_new_repos: Option<String>,
+    #[serde(default)]
+    pub dependency_graph: Option<bool>,
+    #[serde(default)]
+    pub dependabot_alerts: Option<bool>,
+    #[serde(default)]
+    pub dependabot_security_updates: Option<bool>,
+    #[serde(default)]
+    pub secret_scanning: Option<bool>,
+    #[serde(default)]
+    pub secret_scanning_push_protection: Option<bool>,
+}
+
+fn default_configuration_name() -> String {
+    "repocat managed".to_string()
 }
 
 #[derive(Debug, Default, Deserialize, Clone)]

@@ -264,6 +264,54 @@ impl Client {
         let Some(resp) = self.get_optional(&path)? else { return Ok(None); };
         Ok(Some(resp.into_json()?))
     }
+
+    /// Lists the org's code security configurations. Needs a token with
+    /// `admin:org` (or a security-manager role) on the org.
+    pub fn list_code_security_configurations(
+        &self,
+        org: &str,
+    ) -> Result<Vec<CodeSecurityConfig>> {
+        let path = format!("/orgs/{org}/code-security/configurations?per_page=100");
+        Ok(self.get(&path)?.into_json()?)
+    }
+
+    /// Returns the configurations set as defaults for new repos, one entry per
+    /// repo-visibility scope that has a default assigned.
+    pub fn get_code_security_defaults(&self, org: &str) -> Result<Vec<CodeSecurityDefault>> {
+        let path = format!("/orgs/{org}/code-security/configurations/defaults");
+        Ok(self.get(&path)?.into_json()?)
+    }
+
+    /// Creates a configuration. `body` must include `name` and `description`.
+    /// Returns the created configuration (with its assigned `id`).
+    pub fn create_code_security_configuration(
+        &self,
+        org: &str,
+        body: &serde_json::Value,
+    ) -> Result<CodeSecurityConfig> {
+        let path = format!("/orgs/{org}/code-security/configurations");
+        Ok(self.send_json("POST", &path, body)?.into_json()?)
+    }
+
+    pub fn update_code_security_configuration(
+        &self,
+        org: &str,
+        id: u64,
+        body: &serde_json::Value,
+    ) -> Result<()> {
+        let path = format!("/orgs/{org}/code-security/configurations/{id}");
+        self.send_json("PATCH", &path, body)?;
+        Ok(())
+    }
+
+    /// Sets the configuration as the org default for new repos of the given
+    /// scope (`all`, `public`, `private_and_internal`, `none`).
+    pub fn set_code_security_default(&self, org: &str, id: u64, scope: &str) -> Result<()> {
+        let path = format!("/orgs/{org}/code-security/configurations/{id}/defaults");
+        let body = serde_json::json!({ "default_for_new_repos": scope });
+        self.send_json("PUT", &path, &body)?;
+        Ok(())
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -392,4 +440,31 @@ pub struct Enabled {
 pub struct RequiredStatusChecks {
     #[serde(default)]
     pub contexts: Vec<String>,
+}
+
+// Org code security configuration. The API returns many more fields; we
+// deserialize only the features repocat audits (extras are ignored). Feature
+// fields are tri-state strings: "enabled" | "disabled" | "not_set".
+#[derive(Debug, Deserialize, Clone)]
+pub struct CodeSecurityConfig {
+    pub id: u64,
+    pub name: String,
+    #[serde(default)]
+    pub dependency_graph: Option<String>,
+    #[serde(default)]
+    pub dependabot_alerts: Option<String>,
+    #[serde(default)]
+    pub dependabot_security_updates: Option<String>,
+    #[serde(default)]
+    pub secret_scanning: Option<String>,
+    #[serde(default)]
+    pub secret_scanning_push_protection: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CodeSecurityDefault {
+    #[serde(default)]
+    pub default_for_new_repos: Option<String>,
+    #[serde(default)]
+    pub configuration: Option<CodeSecurityConfig>,
 }

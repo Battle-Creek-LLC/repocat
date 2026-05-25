@@ -158,6 +158,32 @@ fn run(mode: Mode, raw_args: &[String]) -> Result<ExitCode> {
     let mut any_apply_error = false;
     let mut all_findings: Vec<(String, Vec<Finding>)> = Vec::new();
 
+    // Org-wide checks run once per invocation, independent of which repos are
+    // targeted — they describe the org, not any single repo.
+    if let Some(org_sec) = cfg.org_security.as_ref() {
+        eprintln!("\n=== {} :: org security ===", cfg.org);
+        let finding = rules::org_security(&client, &cfg.org, org_sec);
+        if finding.status == Status::Fail && finding.severity == Severity::Error {
+            any_error = true;
+        }
+        if defer_rendering {
+            all_findings.push(("(org)".to_string(), vec![finding]));
+        } else {
+            let one = std::slice::from_ref(&finding);
+            render_table(one);
+            match effective_mode {
+                Mode::Audit => {}
+                Mode::Diff => render_actions(one),
+                Mode::Apply => {
+                    // Org actions ignore the repo argument.
+                    if !execute_actions(&client, &cfg.org, "", one) {
+                        any_apply_error = true;
+                    }
+                }
+            }
+        }
+    }
+
     for name in target_repos(&cfg, &args)? {
         let repo_cfg = resolve::effective(&cfg.defaults, &cfg.repos[name]);
         eprintln!("\n=== {}/{name} ===", cfg.org);
@@ -209,7 +235,8 @@ fn preflight_scopes(client: &api::Client, cfg: &Config, args: &Args) -> Result<(
                 .and_then(|a| a.require_dependency_review_action)
                 .unwrap_or(false)
         });
-    if !needs_workflow {
+    let needs_org = cfg.org_security.is_some();
+    if !needs_workflow && !needs_org {
         return Ok(());
     }
     let scopes = client.oauth_scopes()?;
@@ -218,11 +245,19 @@ fn preflight_scopes(client: &api::Client, cfg: &Config, args: &Args) -> Result<(
         // the API will return a clear error if permissions are insufficient.
         return Ok(());
     }
-    if !scopes.iter().any(|s| s == "workflow") {
+    if needs_workflow && !scopes.iter().any(|s| s == "workflow") {
         return Err(anyhow!(
             "apply needs the `workflow` OAuth scope to scaffold dependency-review \
              workflows, but the current token has only [{}]. Run \
              `gh auth refresh --hostname github.com -s workflow` and retry.",
+            scopes.join(", ")
+        ));
+    }
+    if needs_org && !scopes.iter().any(|s| s == "admin:org" || s == "write:org") {
+        return Err(anyhow!(
+            "apply needs the `admin:org` scope to manage org code security \
+             configurations (org_security block), but the current token has only \
+             [{}]. Run `gh auth refresh --hostname github.com -s admin:org` and retry.",
             scopes.join(", ")
         ));
     }
