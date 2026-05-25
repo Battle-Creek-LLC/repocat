@@ -1,5 +1,7 @@
-use crate::api::{BranchProtection as ActualBp, Client, Repo as ActualRepo, RepoTeam};
-use crate::config::{BranchProtection as DesiredBp, RepoConfig};
+use crate::api::{
+    BranchProtection as ActualBp, Client, CodeSecurityConfig, Repo as ActualRepo, RepoTeam,
+};
+use crate::config::{BranchProtection as DesiredBp, OrgSecurity, RepoConfig};
 use anyhow::Result;
 use serde_json::{json, Value};
 use std::fmt;
@@ -13,6 +15,16 @@ pub enum Action {
     PutJson { summary: String, path: String, body: Value },
     ScaffoldDependencyReviewWorkflow { summary: String },
     ScaffoldSemgrepWorkflow { summary: String },
+    // Org-level: reconcile a code security configuration and set it as the org
+    // default. Unlike the repo actions above, this ignores the `repo` argument.
+    // The create→set-default sequence depends on the id GitHub assigns, so the
+    // whole reconcile is one action rather than separate create/default steps.
+    EnsureOrgCodeSecurity {
+        summary: String,
+        name: String,
+        body: Value,
+        default_for_new_repos: Option<String>,
+    },
 }
 
 impl Action {
@@ -25,6 +37,7 @@ impl Action {
             Action::PutJson { summary, .. } => summary,
             Action::ScaffoldDependencyReviewWorkflow { summary } => summary,
             Action::ScaffoldSemgrepWorkflow { summary } => summary,
+            Action::EnsureOrgCodeSecurity { summary, .. } => summary,
         }
     }
 
@@ -51,9 +64,40 @@ impl Action {
             Action::ScaffoldSemgrepWorkflow { .. } => {
                 scaffold_semgrep_workflow(client, org, repo)?;
             }
+            Action::EnsureOrgCodeSecurity { name, body, default_for_new_repos, .. } => {
+                ensure_org_code_security(client, org, name, body, default_for_new_repos.as_deref())?;
+            }
         }
         Ok(())
     }
+}
+
+// Reconciles the named code security configuration: update it in place if one
+// with that name exists, otherwise create it; then set it as the org default
+// for new repos (when a scope is configured). All steps are idempotent, so a
+// re-run after partial failure converges.
+fn ensure_org_code_security(
+    client: &Client,
+    org: &str,
+    name: &str,
+    body: &Value,
+    default_for_new_repos: Option<&str>,
+) -> Result<()> {
+    let existing = client
+        .list_code_security_configurations(org)?
+        .into_iter()
+        .find(|c| c.name == name);
+    let id = match existing {
+        Some(c) => {
+            client.update_code_security_configuration(org, c.id, body)?;
+            c.id
+        }
+        None => client.create_code_security_configuration(org, body)?.id,
+    };
+    if let Some(scope) = default_for_new_repos {
+        client.set_code_security_default(org, id, scope)?;
+    }
+    Ok(())
 }
 
 fn scaffold_dependency_review_workflow(client: &Client, org: &str, repo: &str) -> Result<()> {
@@ -242,6 +286,139 @@ pub fn run_all(client: &Client, org: &str, name: &str, cfg: &RepoConfig) -> Resu
     findings.push(teams_only_access(client, org, name, cfg)?);
 
     Ok(findings)
+}
+
+// Org-wide code security configuration. Runs once per invocation (not per
+// repo). This is the org-level backstop for the repo-level `security:` block:
+// it enforces that a code security configuration with the wanted features
+// exists and is the default for new repos — which is the only reliable way to
+// re-enable e.g. Dependency Graph after an org admin disables it org-wide, a
+// state the per-repo `dependency_graph` check can't always detect on public
+// repos (GitHub omits the field and we treat absence as enabled).
+//
+// Returns a Finding rather than Result: a missing org scope on the token
+// shouldn't abort an otherwise-fine repo audit, so read failures surface as a
+// Fail with guidance instead of propagating.
+pub fn org_security(client: &Client, org: &str, cfg: &OrgSecurity) -> Finding {
+    let mut f = Finding::new("org_code_security", Severity::Error, "CM-6, SI-2, SI-4");
+
+    let configs = match client.list_code_security_configurations(org) {
+        Ok(c) => c,
+        Err(e) => {
+            f.fail(format!("could not read org code security configurations: {e}"));
+            f.messages
+                .push("needs a token with the `admin:org` scope (or a security-manager role)".into());
+            return f;
+        }
+    };
+
+    match configs.iter().find(|c| c.name == cfg.configuration_name) {
+        None => f.fail(format!(
+            "code security configuration `{}` does not exist",
+            cfg.configuration_name
+        )),
+        Some(actual) => {
+            for msg in diff_org_features(cfg, actual) {
+                f.fail(msg);
+            }
+        }
+    }
+
+    if let Some(want_scope) = cfg.default_for_new_repos.as_deref() {
+        // Idempotent re-PUT means over-reporting drift here is harmless: accept
+        // as in-sync only when our config is recorded as the default for the
+        // exact wanted scope.
+        let defaults = client.get_code_security_defaults(org).unwrap_or_default();
+        let is_default = defaults.iter().any(|d| {
+            d.default_for_new_repos.as_deref() == Some(want_scope)
+                && d.configuration.as_ref().map(|c| c.name.as_str())
+                    == Some(cfg.configuration_name.as_str())
+        });
+        if !is_default {
+            f.fail(format!(
+                "`{}` is not the default for new repos (want scope: {want_scope})",
+                cfg.configuration_name
+            ));
+        }
+    }
+
+    if f.status == Status::Fail {
+        f.actions.push(Action::EnsureOrgCodeSecurity {
+            summary: format!(
+                "ensure code security configuration `{}` and org default",
+                cfg.configuration_name
+            ),
+            name: cfg.configuration_name.clone(),
+            body: org_config_body(cfg),
+            default_for_new_repos: cfg.default_for_new_repos.clone(),
+        });
+    }
+
+    f
+}
+
+fn want_status(b: Option<bool>) -> Option<&'static str> {
+    match b {
+        Some(true) => Some("enabled"),
+        Some(false) => Some("disabled"),
+        None => None,
+    }
+}
+
+// Compares the configured features against the live configuration, returning a
+// drift message per mismatch. Unmanaged features (`None` in the config) are
+// skipped; an absent feature on the live side reads as "not_set".
+fn diff_org_features(cfg: &OrgSecurity, actual: &CodeSecurityConfig) -> Vec<String> {
+    let checks: [(&str, Option<bool>, &Option<String>); 5] = [
+        ("dependency_graph", cfg.dependency_graph, &actual.dependency_graph),
+        ("dependabot_alerts", cfg.dependabot_alerts, &actual.dependabot_alerts),
+        (
+            "dependabot_security_updates",
+            cfg.dependabot_security_updates,
+            &actual.dependabot_security_updates,
+        ),
+        ("secret_scanning", cfg.secret_scanning, &actual.secret_scanning),
+        (
+            "secret_scanning_push_protection",
+            cfg.secret_scanning_push_protection,
+            &actual.secret_scanning_push_protection,
+        ),
+    ];
+    let mut msgs = Vec::new();
+    for (name, want, got) in checks {
+        if let Some(want_status) = want_status(want) {
+            let got_status = got.as_deref().unwrap_or("not_set");
+            if got_status != want_status {
+                msgs.push(format!("{name}: want {want_status}, got {got_status}"));
+            }
+        }
+    }
+    msgs
+}
+
+// Builds the create/update request body. Always includes name + description
+// (required by the create endpoint); managed features are sent as explicit
+// statuses, unmanaged ones omitted so they stay at the org/enterprise default.
+fn org_config_body(cfg: &OrgSecurity) -> Value {
+    let mut map = serde_json::Map::new();
+    map.insert("name".into(), json!(cfg.configuration_name));
+    map.insert(
+        "description".into(),
+        json!(cfg.description.clone().unwrap_or_else(|| "Managed by repocat".to_string())),
+    );
+    let features = [
+        ("dependency_graph", cfg.dependency_graph),
+        ("dependabot_alerts", cfg.dependabot_alerts),
+        ("dependabot_security_updates", cfg.dependabot_security_updates),
+        ("secret_scanning", cfg.secret_scanning),
+        ("secret_scanning_push_protection", cfg.secret_scanning_push_protection),
+    ];
+    for (key, want) in features {
+        if let Some(status) = want_status(want) {
+            map.insert(key.into(), json!(status));
+        }
+    }
+    Value::Object(map)
 }
 
 fn teams_only_access(client: &Client, org: &str, repo: &str, cfg: &RepoConfig) -> Result<Finding> {
@@ -1047,6 +1224,75 @@ fn check_and_patch(
 mod tests {
     use super::*;
     use crate::api::{SecurityAndAnalysis, Toggle};
+
+    fn org_cfg() -> OrgSecurity {
+        OrgSecurity {
+            configuration_name: "repocat strict".into(),
+            description: None,
+            default_for_new_repos: Some("all".into()),
+            dependency_graph: Some(true),
+            dependabot_alerts: Some(true),
+            dependabot_security_updates: None,
+            secret_scanning: Some(true),
+            secret_scanning_push_protection: Some(false),
+        }
+    }
+
+    fn live_config(name: &str) -> CodeSecurityConfig {
+        CodeSecurityConfig {
+            id: 42,
+            name: name.into(),
+            dependency_graph: Some("disabled".into()),
+            dependabot_alerts: Some("enabled".into()),
+            dependabot_security_updates: Some("enabled".into()),
+            secret_scanning: None,
+            secret_scanning_push_protection: Some("enabled".into()),
+        }
+    }
+
+    #[test]
+    fn org_features_report_only_managed_mismatches() {
+        let msgs = diff_org_features(&org_cfg(), &live_config("repocat strict"));
+        // dependency_graph: want enabled, got disabled -> drift
+        // dependabot_alerts: want enabled, got enabled -> ok
+        // dependabot_security_updates: unmanaged (None) -> ignored even though live is enabled
+        // secret_scanning: want enabled, got not_set (absent) -> drift
+        // secret_scanning_push_protection: want disabled, got enabled -> drift
+        assert_eq!(msgs.len(), 3, "got: {msgs:?}");
+        assert!(msgs.iter().any(|m| m == "dependency_graph: want enabled, got disabled"));
+        assert!(msgs.iter().any(|m| m == "secret_scanning: want enabled, got not_set"));
+        assert!(msgs
+            .iter()
+            .any(|m| m == "secret_scanning_push_protection: want disabled, got enabled"));
+        assert!(!msgs.iter().any(|m| m.contains("dependabot")));
+    }
+
+    #[test]
+    fn org_features_no_drift_when_aligned() {
+        let cfg = OrgSecurity {
+            dependency_graph: Some(true),
+            secret_scanning_push_protection: Some(true),
+            ..org_cfg()
+        };
+        let actual = CodeSecurityConfig {
+            dependency_graph: Some("enabled".into()),
+            secret_scanning: Some("enabled".into()),
+            ..live_config("repocat strict")
+        };
+        assert!(diff_org_features(&cfg, &actual).is_empty());
+    }
+
+    #[test]
+    fn org_body_sets_statuses_and_omits_unmanaged() {
+        let body = org_config_body(&org_cfg());
+        assert_eq!(body["name"], json!("repocat strict"));
+        assert_eq!(body["description"], json!("Managed by repocat"));
+        assert_eq!(body["dependency_graph"], json!("enabled"));
+        assert_eq!(body["secret_scanning"], json!("enabled"));
+        assert_eq!(body["secret_scanning_push_protection"], json!("disabled"));
+        // unmanaged feature is omitted entirely (stays at org/enterprise default)
+        assert!(body.get("dependabot_security_updates").is_none());
+    }
 
     fn repo(private: bool, dep_graph: Option<&str>) -> ActualRepo {
         ActualRepo {

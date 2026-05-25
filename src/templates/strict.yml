@@ -62,6 +62,29 @@ defaults:
   # Require a CODEOWNERS file with at least one ownership rule (CM-3, AC-5).
   codeowners: true
 
+# Org-wide code security configuration (CM-6 config settings, SI-2 flaw
+# remediation, SI-4 monitoring). Checked once per run, not per repo. repocat
+# ensures a GitHub "code security configuration" with these features exists and
+# is the default for new repos. This is the org-level backstop for the per-repo
+# `security:` block above — notably it re-enables Dependency Graph if an org
+# admin turns it off org-wide, a state the per-repo check can't always detect on
+# public repos.
+#
+# Applying this needs a token with the `admin:org` scope (or a security-manager
+# role) — broader than the repo-admin token the repo-level rules use.
+#
+# default_for_new_repos: one of all | public | private_and_internal | none.
+# GitHub has no single "public and internal" value; `all` is the superset that
+# also covers private repos.
+org_security:
+  configuration_name: "repocat strict"
+  default_for_new_repos: all
+  dependency_graph: true                      # the dependency-review workflow's prerequisite
+  dependabot_alerts: true
+  dependabot_security_updates: true
+  secret_scanning: true
+  secret_scanning_push_protection: true
+
 # Add repos with `repocat repo add <name>`. Per-repo blocks may be empty (`{}`)
 # to inherit defaults verbatim, or override individual fields.
 repos: {}
