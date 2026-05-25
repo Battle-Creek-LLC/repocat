@@ -11,10 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `changelog` command — prints the release notes baked into the binary, so the
   output always matches the installed version. `--since <version>` filters to
-  entries newer than a version; `--upgrade` prints the consumer upgrade guide
-  (how to update the tool and adopt new `.repo.yml` fields).
-- `UPGRADING.md` — consumer-facing guide for adopting new `.repo.yml` schema
-  fields, embedded into the binary and surfaced via `changelog --upgrade`.
+  entries newer than a version; `--upgrade` extracts just the per-version
+  `### Upgrading` notes (how to adopt new `.repo.yml` fields) and combines with
+  `--since` to show only upgrades newer than the version you're on.
+- Per-version `### Upgrading` sections in this changelog, giving an agent (or a
+  human) the concrete steps — exact YAML, field names, required token scopes — to
+  adopt each release's `.repo.yml` changes.
 
 ### Changed
 
@@ -43,6 +45,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `apply` preflight now also requires the `admin:org` scope when an
   `org_security` block is present, failing fast with a `gh auth refresh` hint.
 
+### Upgrading
+
+Add a top-level `org_security:` block (a sibling of `defaults:` and `repos:` —
+it is org-scoped, not per-repo), then run `repocat apply` with a token that has
+the `admin:org` scope (`gh auth refresh -s admin:org`):
+
+```yaml
+org_security:
+  configuration_name: "repocat baseline"   # stable name repocat reconciles by
+  default_for_new_repos: all                # all | public | private_and_internal | none
+  dependency_graph: true
+  dependabot_alerts: true
+  dependabot_security_updates: true
+  # secret_scanning / secret_scanning_push_protection are GitHub Advanced
+  # Security-gated on private repos — set them only where repos are eligible.
+```
+
+Requires repocat 0.3.0+ (older versions reject the unknown `org_security` field).
+
 ## [0.2.0] — 2026-05-23
 
 ### Changed
@@ -66,6 +87,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Published to crates.io as **`bcl-repocat`** (the `repocat` name is taken by an
   unrelated crate). `cargo install bcl-repocat` installs the `repocat` binary.
+
+### Upgrading
+
+Set `require_semgrep_workflow: true` under a repo's `actions:` block; `apply`
+scaffolds `.github/workflows/semgrep.yml` if missing (needs the `workflow`
+scope). Skipped on private repos, where SARIF upload to code scanning needs
+GitHub Advanced Security.
 
 ## [0.1.2] — 2026-04-29
 

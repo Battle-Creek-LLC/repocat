@@ -116,7 +116,7 @@ repocat changelog            # full release notes
 repocat changelog --upgrade  # how to upgrade and adopt new .repo.yml fields
 ```
 
-These are also in [`CHANGELOG.md`](CHANGELOG.md) and [`UPGRADING.md`](UPGRADING.md).
-Older versions reject `.repo.yml` files that use newer fields with an
-`unknown field` error — upgrade before adopting a new block (e.g. `org_security`,
-added in 0.3.0).
+The upgrade notes live in [`CHANGELOG.md`](CHANGELOG.md) under each release's
+`### Upgrading` heading (that's exactly what `changelog --upgrade` prints). Older
+versions reject `.repo.yml` files that use newer fields with an `unknown field`
+error — upgrade before adopting a new block (e.g. `org_security`, added in 0.3.0).

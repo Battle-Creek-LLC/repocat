@@ -374,7 +374,15 @@ fn run_init(raw_args: &[String]) -> Result<ExitCode> {
 // entries; `--upgrade` prints the consumer upgrade guide (how to update the tool
 // and adopt new `.repo.yml` fields) instead.
 const CHANGELOG: &str = include_str!("../CHANGELOG.md");
-const UPGRADING: &str = include_str!("../UPGRADING.md");
+
+const UPGRADE_HEADER: &str = "\
+# Upgrading repocat
+
+Update the tool with `cargo install bcl-repocat` (add `--force` to replace an
+older build), then adopt any new `.repo.yml` fields below. Older versions reject
+files that use newer fields with an `unknown field` error.
+
+";
 
 fn run_changelog(raw_args: &[String]) -> Result<ExitCode> {
     let mut since: Option<String> = None;
@@ -392,10 +400,15 @@ fn run_changelog(raw_args: &[String]) -> Result<ExitCode> {
         i += 1;
     }
     if upgrade {
-        if since.is_some() {
-            return Err(anyhow!("--since cannot be combined with --upgrade"));
+        // The upgrade guide is derived from the `### Upgrading` sections in
+        // CHANGELOG.md — one source of truth, so it can't drift from the notes.
+        print!("{UPGRADE_HEADER}");
+        let notes = extract_upgrade_notes(CHANGELOG, since.as_deref())?;
+        if notes.trim().is_empty() {
+            println!("No `.repo.yml` schema changes to adopt in this range.");
+        } else {
+            print!("{notes}");
         }
-        print!("{UPGRADING}");
         return Ok(ExitCode::SUCCESS);
     }
     match since {
@@ -403,6 +416,47 @@ fn run_changelog(raw_args: &[String]) -> Result<ExitCode> {
         Some(v) => print!("{}", filter_changelog_since(CHANGELOG, &v)?),
     }
     Ok(ExitCode::SUCCESS)
+}
+
+// Collects the `### Upgrading` subsection from each version section, prefixed by
+// that version's heading for context. With `since`, only versions newer than it
+// are included — the set of steps an agent needs to go from `since` to current.
+fn extract_upgrade_notes(full: &str, since: Option<&str>) -> Result<String> {
+    let target = match since {
+        Some(s) => Some(
+            parse_version(s).ok_or_else(|| anyhow!("invalid --since version `{s}` (want X.Y.Z)"))?,
+        ),
+        None => None,
+    };
+    let mut out = String::new();
+    let mut current_header: Option<&str> = None;
+    let mut version_included = false;
+    let mut header_emitted = false;
+    let mut in_upgrade = false;
+    for line in full.lines() {
+        if line.starts_with("## [") {
+            current_header = Some(line);
+            version_included = heading_version(line).is_none_or(|v| target.is_none_or(|t| v > t));
+            header_emitted = false;
+            in_upgrade = false;
+        } else if line.starts_with("### ") {
+            in_upgrade = version_included && line.starts_with("### Upgrading");
+        } else if in_upgrade {
+            if !header_emitted {
+                if !out.is_empty() {
+                    out.push('\n');
+                }
+                if let Some(h) = current_header {
+                    out.push_str(h);
+                    out.push('\n');
+                }
+                header_emitted = true;
+            }
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    Ok(out)
 }
 
 // Parses a dotted "X.Y.Z" (an optional leading `v` is tolerated) into a tuple
@@ -712,6 +766,63 @@ first release
         let out = filter_changelog_since(SAMPLE_CHANGELOG, "9.9.9").unwrap();
         assert!(out.contains("# Changelog"));
         assert!(!out.contains("## ["));
+    }
+
+    const SAMPLE_WITH_UPGRADE: &str = "\
+# Changelog
+
+intro
+
+## [0.3.0] — 2026-05-25
+
+### Added
+
+- a feature
+
+### Upgrading
+
+add the org_security block.
+
+## [0.2.0] — 2026-05-23
+
+### Changed
+
+- ci-only change, no schema impact
+
+## [0.1.3] — 2026-05-23
+
+### Upgrading
+
+set require_semgrep_workflow.
+";
+
+    #[test]
+    fn upgrade_notes_collect_upgrading_sections_with_headers() {
+        let out = extract_upgrade_notes(SAMPLE_WITH_UPGRADE, None).unwrap();
+        assert!(out.contains("## [0.3.0]"), "version header for an upgrade section");
+        assert!(out.contains("add the org_security block."));
+        assert!(out.contains("## [0.1.3]"));
+        assert!(out.contains("set require_semgrep_workflow."));
+        // a version with no `### Upgrading` contributes nothing
+        assert!(!out.contains("## [0.2.0]"));
+        assert!(!out.contains("ci-only change"));
+        // non-Upgrading content from an included version is excluded
+        assert!(!out.contains("- a feature"));
+    }
+
+    #[test]
+    fn upgrade_notes_since_excludes_older_versions() {
+        let out = extract_upgrade_notes(SAMPLE_WITH_UPGRADE, Some("0.2.0")).unwrap();
+        assert!(out.contains("## [0.3.0]"));
+        assert!(out.contains("add the org_security block."));
+        // 0.1.3 is older than 0.2.0 -> dropped
+        assert!(!out.contains("## [0.1.3]"));
+        assert!(!out.contains("require_semgrep_workflow"));
+    }
+
+    #[test]
+    fn upgrade_notes_reject_invalid_since() {
+        assert!(extract_upgrade_notes(SAMPLE_WITH_UPGRADE, Some("nope")).is_err());
     }
 }
 
