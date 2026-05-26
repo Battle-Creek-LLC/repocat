@@ -1,7 +1,12 @@
 # repocat
 
-GitHub repository hardening CLI. Reads a declarative `.repo.yml` baseline and
+GitHub **and** GitLab repository hardening CLI. Reads a declarative baseline and
 either reports drift (`audit`) or reconciles it (`apply`).
+
+GitHub and GitLab are co-equal: each has its own native config file —
+`.repo.github.yml` and `.repo.gitlab.yml` — with no shared schema and no default
+provider. The filename selects the host; `repocat` runs whichever file(s) are
+present in the current directory.
 
 ## Install
 
@@ -15,8 +20,9 @@ Installs the `repocat` binary. The crate is published as **`bcl-repocat`**
 (`repocat` was already taken on crates.io by an unrelated project) — the command
 is still `repocat`.
 
-On Linux the `keyring` crate needs `libdbus-1-dev` and `pkg-config`
-(`sudo apt-get install libdbus-1-dev pkg-config` on Debian/Ubuntu).
+On Linux the `keyring` crate (used by the GitHub credential path) needs
+`libdbus-1-dev` and `pkg-config` to build (`sudo apt-get install libdbus-1-dev
+pkg-config` on Debian/Ubuntu), and `libdbus-1-3` at runtime.
 
 ### Prebuilt binary (no compile)
 
@@ -48,32 +54,55 @@ cargo install --git https://github.com/Battle-Creek-LLC/repocat
 
 ## Getting started
 
-`repocat` is driven by a `.repo.yml` baseline that lists your GitHub org, the
-repos to harden, and the rules to enforce. A typical first run:
+`repocat` is driven by a baseline file that names your org/group, the
+repos/projects to harden, and the rules to enforce.
+
+### GitHub
 
 ```sh
-gh auth login                                # if you haven't already
-repocat init --preset standard --org my-org  # writes .repo.yml in the current dir
-repocat repo add my-repo                     # add each repo you want to harden
-repocat audit                                # report drift
-repocat diff                                 # preview what `apply` would change
-repocat apply                                # reconcile the repo to .repo.yml
+gh auth login                                          # if you haven't already
+repocat init --preset standard --org my-org            # writes .repo.github.yml
+repocat repo add my-repo                               # add each repo to harden
+repocat audit                                          # report drift
+repocat diff                                           # preview what apply would change
+repocat apply                                          # reconcile to the baseline
 ```
 
-`.repo.yml` is created and read from the current working directory — `cd` to
-wherever you want it to live, or pass `-f <path>` to point elsewhere. The
-`error: reading .repo.yml: No such file or directory` message just means you
-haven't run `init` in that directory yet.
+### GitLab
+
+```sh
+glab auth login                                        # if you haven't already
+repocat init --provider gitlab                         # writes .repo.gitlab.yml from the git remote
+repocat audit                                          # reuses glab's stored token
+repocat diff
+repocat apply
+```
+
+The baseline is created and read from the current working directory — `cd` to
+wherever it lives, or pass `-f <path>` to point elsewhere. `repocat` no longer
+has a default provider, so a leftover `.repo.yml` prints a migration hint
+(rename it to `.repo.github.yml`).
 
 > **Stuck on an error or finding?** Paste the command, the output, and your
-> `.repo.yml` into Claude Code, Cursor, or ChatGPT and ask what to do.
-> `repocat`'s output is designed to be agent-friendly — an LLM will usually
-> translate a finding into a concrete fix faster than scanning the rule
-> reference below.
+> config into Claude Code, Cursor, or ChatGPT and ask what to do. `repocat`'s
+> output is designed to be agent-friendly — an LLM will usually translate a
+> finding into a concrete fix faster than scanning the rule reference below.
 
-## Status
+## Credentials
 
-Early development. `audit`, `diff`, and `apply` work for these rules:
+- **GitHub** — resolved from `GH_TOKEN`/`GITHUB_TOKEN`, then the macOS keychain
+  (matching the `gh` CLI), then `~/.config/gh/hosts.yml`.
+- **GitLab** — resolved from `GITLAB_TOKEN`, then `glab`'s config
+  (`~/.config/glab-cli/config.yml`, plaintext `hosts.<host>.token`). Works for
+  gitlab.com and self-managed instances; honors the host's `api_host`,
+  `api_protocol`, `subfolder`, and `skip_tls_verify`. `apply` needs the `api`
+  scope; `audit`/`diff` need `read_api`.
+
+## Rules
+
+### GitHub (`.repo.github.yml`)
+
+`audit`, `diff`, and `apply` work for:
 
 - `branch_protection` (AC-3, CM-3)
 - `merge_settings` (CM-3)
@@ -86,7 +115,29 @@ Early development. `audit`, `diff`, and `apply` work for these rules:
 - `semgrep_workflow` (SA-11, RA-5) — audits for `.github/workflows/semgrep.yml` and scaffolds one (Semgrep OSS rulesets → SARIF → code scanning); skips on private repos (SARIF upload needs GitHub Advanced Security)
 - `signed_commits` (SI-7) — required-signatures enforcement on the protected branch
 - `teams_only_access` (AC-2, AC-6) — audit-only; flags direct collaborators and team-permission drift
-- `org_code_security` (CM-6, SI-2, SI-4) — **org-scoped** (runs once per invocation, not per repo); manages a GitHub code security configuration and sets it as the org default for new repos. See [Upgrading](#upgrading)
+- `org_code_security` (CM-6, SI-2, SI-4) — **org-scoped** (runs once per invocation); manages a GitHub code security configuration and sets it as the org default for new repos
+
+### GitLab (`.repo.gitlab.yml`)
+
+Authored in GitLab's native vocabulary. `audit` + `apply`:
+
+- `protected_branches` (AC-3, CM-3) — force-push, push/merge access levels, code-owner approval
+- `approval_rules` (AC-3, CM-3) — merge-request approval rules *(Premium/Ultimate)*
+- `merge_request_approvals` (CM-3) — `reset_approvals_on_push` *(Premium/Ultimate)*
+- `project_settings` (CM-3) — merge method, squash, pipeline-must-succeed, discussions-resolved
+- `push_rules` (SI-7) — `reject_unsigned_commits` *(Premium/Ultimate)*
+
+Audit-only:
+
+- `required_files` (CM-2), `codeowners` (CM-3, AC-5) — checks `.gitlab/CODEOWNERS`, `CODEOWNERS`, or `docs/CODEOWNERS`
+- `ci_security` (SA-11, RA-5, SI-2) — SAST / Secret Detection / Dependency Scanning templates in `.gitlab-ci.yml`
+- `members` (AC-2, AC-6) — direct project members vs group shares
+
+On GitLab Free/CE, Premium/Ultimate rules degrade cleanly: `approval_rules` and
+`push_rules` `skip` on a 403, and `reset_approvals_on_push` reports an honest
+failure instead of a false pass. The generated config marks these lines
+`## PREMIUM/ULTIMATE`. See [docs/gitlab.md](docs/gitlab.md) for details and the
+[design spec](docs/specs/0001-gitlab-support.md).
 
 ## Usage
 
@@ -95,28 +146,28 @@ repocat audit                       # report drift, exit 1 on error-severity fai
 repocat audit --format json         # structured findings for downstream tooling
 repocat audit --format sarif        # SARIF 2.1.0 for GitHub Code Scanning upload
 repocat diff                        # preview changes apply would make
-repocat apply                       # reconcile to .repo.yml
-repocat apply --dry-run             # same as `diff`
+repocat apply                       # reconcile to the baseline
+repocat apply --dry-run             # same as diff
+repocat init --provider gitlab      # scaffold a GitLab config (default provider is github)
 repocat changelog                   # release notes for the installed version
-repocat changelog --since 0.2.0     # only what changed since a version
-repocat changelog --upgrade         # how to upgrade + adopt new .repo.yml fields
+repocat changelog --since 0.4.0     # only what changed since a version
+repocat changelog --upgrade         # how to upgrade + adopt new config fields
 ```
-
-Credentials are resolved from `GH_TOKEN`/`GITHUB_TOKEN`, then the macOS
-keychain (matching the `gh` CLI), then `~/.config/gh/hosts.yml`.
 
 ## Upgrading
 
 Upgrade the tool with `cargo install bcl-repocat` (add `--force` to replace an
-older build). The changelog and the `.repo.yml` migration notes are baked into
-the binary, so they always match the version you have installed:
+older build). The changelog and the migration notes are baked into the binary,
+so they always match the version you have installed:
 
 ```sh
 repocat changelog            # full release notes
-repocat changelog --upgrade  # how to upgrade and adopt new .repo.yml fields
+repocat changelog --upgrade  # how to upgrade and adopt new config fields
 ```
 
 The upgrade notes live in [`CHANGELOG.md`](CHANGELOG.md) under each release's
-`### Upgrading` heading (that's exactly what `changelog --upgrade` prints). Older
-versions reject `.repo.yml` files that use newer fields with an `unknown field`
-error — upgrade before adopting a new block (e.g. `org_security`, added in 0.3.0).
+`### Upgrading` heading (that's exactly what `changelog --upgrade` prints).
+
+> **0.5.0 is a breaking change:** the GitHub config moves from `.repo.yml` to
+> `.repo.github.yml`. Rename it with `git mv .repo.yml .repo.github.yml`. The
+> schema is unchanged.

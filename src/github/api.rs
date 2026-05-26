@@ -2,7 +2,7 @@ use anyhow::{anyhow, Result};
 use base64::{engine::general_purpose::STANDARD as B64, Engine};
 use serde::Deserialize;
 
-use crate::auth::user_agent;
+use super::auth::user_agent;
 
 fn urlencode(s: &str) -> String {
     let mut out = String::with_capacity(s.len());

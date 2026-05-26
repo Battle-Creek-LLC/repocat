@@ -1,10 +1,10 @@
-use crate::api::{
+use super::api::{
     BranchProtection as ActualBp, Client, CodeSecurityConfig, Repo as ActualRepo, RepoTeam,
 };
-use crate::config::{BranchProtection as DesiredBp, OrgSecurity, RepoConfig};
+use super::config::{BranchProtection as DesiredBp, OrgSecurity, RepoConfig};
+use crate::finding::{Severity, Status};
 use anyhow::Result;
 use serde_json::{json, Value};
-use std::fmt;
 
 #[derive(Debug)]
 pub enum Action {
@@ -212,38 +212,10 @@ jobs:
         })
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Severity {
-    Error,
-    Warning,
-}
-
-impl fmt::Display for Severity {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            Severity::Error => "error",
-            Severity::Warning => "warning",
-        })
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Status {
-    Pass,
-    Fail,
-    Skip,
-}
-
-impl fmt::Display for Status {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            Status::Pass => "pass",
-            Status::Fail => "fail",
-            Status::Skip => "skip",
-        })
-    }
-}
-
+/// A GitHub rule's result: the host-agnostic reporting fields plus the
+/// executable `actions` that `apply` runs. `github::run` reports via
+/// [`crate::finding::Finding`] (which drops `actions`) and executes the
+/// actions here.
 #[derive(Debug)]
 pub struct Finding {
     pub rule: &'static str,
@@ -1223,7 +1195,7 @@ fn check_and_patch(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::api::{SecurityAndAnalysis, Toggle};
+    use super::super::api::{SecurityAndAnalysis, Toggle};
 
     fn org_cfg() -> OrgSecurity {
         OrgSecurity {

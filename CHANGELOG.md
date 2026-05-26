@@ -5,6 +5,60 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] — 2026-05-26
+
+### Added
+
+- **GitLab support.** repocat now hardens GitLab projects alongside GitHub. It
+  reuses the token the [`glab`](https://gitlab.com/gitlab-org/cli) CLI stores
+  (`GITLAB_TOKEN`, then `~/.config/glab-cli/config.yml`), works against
+  gitlab.com and self-managed instances, and honors a host's `skip_tls_verify`
+  for self-signed instances. Rules: `protected_branches`, `approval_rules`,
+  `merge_request_approvals`, `project_settings`, `push_rules` (audit + apply);
+  `required_files`, `codeowners`, `ci_security`, `members` (audit-only). Premium/
+  Ultimate-gated rules degrade cleanly — `approval_rules`/`push_rules` `skip` on
+  403, and `reset_approvals_on_push` reports an honest failure rather than a
+  false success when GitLab silently ignores it.
+- `repocat init --provider <github|gitlab>` — scaffolds the provider's native
+  config. `--provider gitlab` detects the namespace from the git remote and
+  writes a secure-by-default `.repo.gitlab.yml` (every hardening rule enabled,
+  paid-tier lines marked `## PREMIUM/ULTIMATE`).
+
+### Changed
+
+- **Two co-equal providers, two config files.** GitHub and GitLab each have
+  their own native config — `.repo.github.yml` and `.repo.gitlab.yml` — with no
+  shared schema and no default provider. The filename selects the provider;
+  repocat runs whichever file(s) are present (`-f <path>` targets one).
+- Internals refactored into self-contained `github/` and `gitlab/` provider
+  modules (no shared host trait); only the `Finding` reporting type and output
+  rendering are shared.
+
+### Upgrading
+
+**Breaking: the config file is renamed.** `repocat` no longer reads `.repo.yml`.
+Rename your GitHub config:
+
+```sh
+git mv .repo.yml .repo.github.yml
+```
+
+The GitHub schema is unchanged — only the filename moves. If you run a command
+with a `.repo.yml` still present, repocat prints a migration hint and exits.
+
+To start hardening a GitLab project, scaffold its config (reusing your `glab`
+login) and audit:
+
+```sh
+glab auth login                      # if you haven't already
+repocat init --provider gitlab       # writes .repo.gitlab.yml from the git remote
+repocat audit                        # reuses glab's token
+```
+
+On GitLab Free/CE, Premium/Ultimate rules in the generated config are marked
+`## PREMIUM/ULTIMATE`; comment them out for a quieter audit, or leave them —
+they `skip` (403) or report an honest failure rather than a false pass.
+
 ## [0.4.0] — 2026-05-25
 
 ### Added

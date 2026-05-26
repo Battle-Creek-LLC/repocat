@@ -1,24 +1,20 @@
-mod api;
-mod auth;
-mod config;
-mod git;
+mod finding;
+mod github;
+mod gitlab;
 mod output;
-mod presets;
-mod resolve;
-mod rules;
+mod provider;
 
 use anyhow::{anyhow, Context, Result};
 use std::{fs, path::PathBuf, process::ExitCode};
 
-use crate::config::Config;
+use crate::github::presets::Preset;
 use crate::output::Format;
-use crate::presets::Preset;
-use crate::rules::{Finding, Severity, Status};
+use crate::provider::Provider;
 
-const DEFAULT_CONFIG: &str = ".repo.yml";
+const DEFAULT_CONFIG: &str = provider::GITHUB_CONFIG;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Mode {
+pub enum Mode {
     Audit,
     Diff,
     Apply,
@@ -76,17 +72,17 @@ fn print_usage() {
     );
 }
 
-struct Args {
-    config_path: PathBuf,
-    filter_repos: Vec<String>,
-    all: bool,
-    dry_run: bool,
-    format: Format,
+pub struct Args {
+    pub config_path: Option<PathBuf>,
+    pub filter_repos: Vec<String>,
+    pub all: bool,
+    pub dry_run: bool,
+    pub format: Format,
 }
 
 fn parse_args(args: &[String]) -> Result<Args> {
     let mut out = Args {
-        config_path: PathBuf::from(DEFAULT_CONFIG),
+        config_path: None,
         filter_repos: Vec::new(),
         all: false,
         dry_run: false,
@@ -97,9 +93,9 @@ fn parse_args(args: &[String]) -> Result<Args> {
         match args[i].as_str() {
             "-f" | "--file" => {
                 i += 1;
-                out.config_path = PathBuf::from(
+                out.config_path = Some(PathBuf::from(
                     args.get(i).ok_or_else(|| anyhow!("--file needs a value"))?,
-                );
+                ));
             }
             "--all" => out.all = true,
             "--dry-run" => out.dry_run = true,
@@ -116,105 +112,41 @@ fn parse_args(args: &[String]) -> Result<Args> {
     Ok(out)
 }
 
-fn target_repos<'a>(cfg: &'a Config, args: &Args) -> Result<Vec<&'a String>> {
-    if args.all || args.filter_repos.is_empty() {
-        return Ok(cfg.repos.keys().collect());
-    }
-    let mut out = Vec::new();
-    for name in &args.filter_repos {
-        let key = cfg
-            .repos
-            .keys()
-            .find(|k| *k == name)
-            .ok_or_else(|| anyhow!("repo `{name}` not found in {}", args.config_path.display()))?;
-        out.push(key);
-    }
-    Ok(out)
-}
-
+// Dispatch: discover which config files are present (or the explicit -f), then
+// hand each to its provider module. The providers are equals — neither is the
+// default — so `main` only routes and aggregates; the per-host pipeline,
+// rendering, and execution live inside the module.
 fn run(mode: Mode, raw_args: &[String]) -> Result<ExitCode> {
     let args = parse_args(raw_args)?;
     let effective_mode = if mode == Mode::Apply && args.dry_run { Mode::Diff } else { mode };
-
     if args.format != Format::Text && effective_mode != Mode::Audit {
         return Err(anyhow!("--format is only supported with `audit`"));
     }
-    let defer_rendering = args.format != Format::Text;
 
-    let cfg = config::load(&args.config_path)?;
-    if cfg.repos.is_empty() {
-        return Err(anyhow!(
-            "no repos in {} — add one with `repocat repo add <name>`",
-            args.config_path.display()
-        ));
-    }
-    let (token, login) = auth::load_credentials()?;
-    eprintln!("authenticated as {login}");
-    let client = api::Client::new(token);
-
-    if effective_mode == Mode::Apply {
-        preflight_scopes(&client, &cfg, &args)?;
-    }
+    let configs = provider::discover(args.config_path.as_deref())?;
 
     let mut any_error = false;
     let mut any_apply_error = false;
-    let mut all_findings: Vec<(String, Vec<Finding>)> = Vec::new();
+    // `--format` implies `audit`, and in practice at most one config of each
+    // kind is present, so holding the last outcome covers JSON/SARIF rendering.
+    let mut deferred: Option<finding::Outcome> = None;
 
-    // Org-wide checks run once per invocation, independent of which repos are
-    // targeted — they describe the org, not any single repo.
-    if let Some(org_sec) = cfg.org_security.as_ref() {
-        eprintln!("\n=== {} :: org security ===", cfg.org);
-        let finding = rules::org_security(&client, &cfg.org, org_sec);
-        if finding.status == Status::Fail && finding.severity == Severity::Error {
-            any_error = true;
-        }
-        if defer_rendering {
-            all_findings.push(("(org)".to_string(), vec![finding]));
-        } else {
-            let one = std::slice::from_ref(&finding);
-            render_table(one);
-            match effective_mode {
-                Mode::Audit => {}
-                Mode::Diff => render_actions(one),
-                Mode::Apply => {
-                    // Org actions ignore the repo argument.
-                    if !execute_actions(&client, &cfg.org, "", one) {
-                        any_apply_error = true;
-                    }
-                }
-            }
+    for (prov, path) in configs {
+        let outcome = match prov {
+            Provider::GitHub => github::run(mode, &path, &args)?,
+            Provider::GitLab => gitlab::run(mode, &path, &args)?,
+        };
+        any_error |= outcome.any_error;
+        any_apply_error |= outcome.any_apply_error;
+        if args.format != Format::Text {
+            deferred = Some(outcome);
         }
     }
 
-    for name in target_repos(&cfg, &args)? {
-        let repo_cfg = resolve::effective(&cfg.defaults, &cfg.repos[name]);
-        eprintln!("\n=== {}/{name} ===", cfg.org);
-        let findings = rules::run_all(&client, &cfg.org, name, &repo_cfg)?;
-
-        if findings.iter().any(|f| f.status == Status::Fail && f.severity == Severity::Error) {
-            any_error = true;
-        }
-
-        if !defer_rendering {
-            render_table(&findings);
-            match effective_mode {
-                Mode::Audit => {}
-                Mode::Diff => render_actions(&findings),
-                Mode::Apply => {
-                    if !execute_actions(&client, &cfg.org, name, &findings) {
-                        any_apply_error = true;
-                    }
-                }
-            }
-        }
-
-        all_findings.push((name.clone(), findings));
-    }
-
-    if defer_rendering {
+    if let Some(o) = deferred {
         let rendered = match args.format {
-            Format::Json => output::render_json(&cfg.org, &all_findings)?,
-            Format::Sarif => output::render_sarif(&cfg.org, &all_findings)?,
+            Format::Json => output::render_json(&o.namespace, &o.findings)?,
+            Format::Sarif => output::render_sarif(&o.namespace, &o.findings)?,
             Format::Text => unreachable!("text doesn't defer"),
         };
         println!("{rendered}");
@@ -227,93 +159,31 @@ fn run(mode: Mode, raw_args: &[String]) -> Result<ExitCode> {
     Ok(ExitCode::from(code))
 }
 
-fn preflight_scopes(client: &api::Client, cfg: &Config, args: &Args) -> Result<()> {
-    let needs_workflow = target_repos(cfg, args)?
-        .iter()
-        .any(|name| {
-            resolve::effective(&cfg.defaults, &cfg.repos[*name])
-                .actions
-                .as_ref()
-                .and_then(|a| a.require_dependency_review_action)
-                .unwrap_or(false)
-        });
-    let needs_org = cfg.org_security.is_some();
-    if !needs_workflow && !needs_org {
-        return Ok(());
-    }
-    let scopes = client.oauth_scopes()?;
-    if scopes.is_empty() {
-        // Fine-grained PAT — scopes don't appear in this header. Trust and proceed;
-        // the API will return a clear error if permissions are insufficient.
-        return Ok(());
-    }
-    if needs_workflow && !scopes.iter().any(|s| s == "workflow") {
-        return Err(anyhow!(
-            "apply needs the `workflow` OAuth scope to scaffold dependency-review \
-             workflows, but the current token has only [{}]. Run \
-             `gh auth refresh --hostname github.com -s workflow` and retry.",
-            scopes.join(", ")
-        ));
-    }
-    if needs_org && !scopes.iter().any(|s| s == "admin:org" || s == "write:org") {
-        return Err(anyhow!(
-            "apply needs the `admin:org` scope to manage org code security \
-             configurations (org_security block), but the current token has only \
-             [{}]. Run `gh auth refresh --hostname github.com -s admin:org` and retry.",
-            scopes.join(", ")
-        ));
-    }
-    Ok(())
-}
-
-fn render_table(findings: &[Finding]) {
-    let rule_w = findings.iter().map(|f| f.rule.len()).max().unwrap_or(4).max(4);
-    let sev_w = 7;
-    let status_w = 6;
-
-    println!(
-        "{:rule_w$}  {:sev_w$}  {:status_w$}  {}",
-        "rule", "sev", "status", "details",
-        rule_w = rule_w, sev_w = sev_w, status_w = status_w
-    );
-    println!("{}", "-".repeat(rule_w + sev_w + status_w + 20));
-
-    for f in findings {
-        let detail = if f.messages.is_empty() {
-            format!("[{}]", f.nist)
-        } else {
-            format!("{} [{}]", f.messages.join("; "), f.nist)
-        };
-        println!(
-            "{:rule_w$}  {:sev_w$}  {:status_w$}  {}",
-            f.rule, f.severity.to_string(), f.status.to_string(), detail,
-            rule_w = rule_w, sev_w = sev_w, status_w = status_w
-        );
-    }
-}
-
-fn render_actions(findings: &[Finding]) {
-    let actions: Vec<_> = findings.iter().flat_map(|f| f.actions.iter().map(move |a| (f.rule, a))).collect();
-    if actions.is_empty() {
-        println!("\n(no changes)");
-        return;
-    }
-    println!("\nplanned changes:");
-    for (rule, action) in actions {
-        println!("  [{rule}] {}", action.summary());
-    }
-}
-
 fn run_init(raw_args: &[String]) -> Result<ExitCode> {
     let mut preset = Preset::Standard;
-    let mut path = PathBuf::from(DEFAULT_CONFIG);
+    let mut explicit_path: Option<PathBuf> = None;
     let mut force = false;
     let mut to_stdout = false;
     let mut org_override: Option<String> = None;
+    // Default provider is github, preserving the prior single-provider behavior.
+    let mut provider = Provider::GitHub;
 
     let mut i = 0;
     while i < raw_args.len() {
         match raw_args[i].as_str() {
+            "--provider" => {
+                i += 1;
+                let v = raw_args.get(i).ok_or_else(|| anyhow!("--provider needs a value"))?;
+                provider = match v.as_str() {
+                    "github" => Provider::GitHub,
+                    "gitlab" => Provider::GitLab,
+                    other => {
+                        return Err(anyhow!(
+                            "unknown --provider `{other}` (expected `github` or `gitlab`)"
+                        ))
+                    }
+                };
+            }
             "--preset" => {
                 i += 1;
                 let v = raw_args.get(i).ok_or_else(|| anyhow!("--preset needs a value"))?;
@@ -321,9 +191,9 @@ fn run_init(raw_args: &[String]) -> Result<ExitCode> {
             }
             "-f" | "--file" => {
                 i += 1;
-                path = PathBuf::from(
+                explicit_path = Some(PathBuf::from(
                     raw_args.get(i).ok_or_else(|| anyhow!("--file needs a value"))?,
-                );
+                ));
             }
             "--stdout" => to_stdout = true,
             "--force" => force = true,
@@ -338,14 +208,46 @@ fn run_init(raw_args: &[String]) -> Result<ExitCode> {
         i += 1;
     }
 
-    let org = match org_override {
-        Some(o) => o,
-        None => git::detect_org().map_err(|e| {
-            anyhow!("could not detect org from git remote ({e}); pass --org <name>")
-        })?,
+    // The default output path follows the chosen provider; an explicit `-f`
+    // always wins. `--preset` only applies to github; for gitlab it is ignored.
+    let (rendered, path) = match provider {
+        Provider::GitHub => {
+            let path = explicit_path.unwrap_or_else(|| PathBuf::from(provider::GITHUB_CONFIG));
+            let org = match org_override {
+                Some(o) => o,
+                None => github::git::detect_org().map_err(|e| {
+                    anyhow!("could not detect org from git remote ({e}); pass --org <name>")
+                })?,
+            };
+            (github::init_template(preset, &org), path)
+        }
+        Provider::GitLab => {
+            let path = explicit_path.unwrap_or_else(|| PathBuf::from(provider::GITLAB_CONFIG));
+            // Resolve group/host/project. With `--org`, the group is fixed; we
+            // still try detection to fill in a real host/project, but fall back
+            // to placeholders rather than failing. Without `--org`, detection is
+            // required — a clear error points the user at `--org` + manual edits.
+            let (group, host, project) = match org_override {
+                Some(group) => {
+                    let (host, project) = gitlab::init::detect()
+                        .map(|(host, _ns, project)| (host, project))
+                        .unwrap_or_else(|_| ("gitlab.com".to_string(), "your-project".to_string()));
+                    (group, host, project)
+                }
+                None => {
+                    let (host, ns, project) = gitlab::init::detect().map_err(|e| {
+                        anyhow!(
+                            "could not detect GitLab namespace from git remote ({e}); \
+                             pass --org <group> and edit the generated {} by hand",
+                            provider::GITLAB_CONFIG
+                        )
+                    })?;
+                    (ns, host, project)
+                }
+            };
+            (gitlab::init::template(&group, &host, &project), path)
+        }
     };
-
-    let rendered = preset.template().replace("{{ORG}}", &org);
 
     if to_stdout {
         print!("{rendered}");
@@ -363,23 +265,32 @@ fn run_init(raw_args: &[String]) -> Result<ExitCode> {
     eprintln!("wrote {}", path.display());
 
     // Validate by running the same loader the other commands use.
-    config::load(&path).with_context(|| {
-        format!("template wrote but failed to re-parse from {}", path.display())
-    })?;
+    match provider {
+        Provider::GitHub => {
+            github::config::load(&path).with_context(|| {
+                format!("template wrote but failed to re-parse from {}", path.display())
+            })?;
+        }
+        Provider::GitLab => {
+            gitlab::init::validate(&path).with_context(|| {
+                format!("template wrote but failed to re-parse from {}", path.display())
+            })?;
+        }
+    }
     Ok(ExitCode::SUCCESS)
 }
 
 // `changelog` prints the release notes baked into the binary at build time, so
 // the output always matches the installed version. `--since` filters to newer
 // entries; `--upgrade` prints the consumer upgrade guide (how to update the tool
-// and adopt new `.repo.yml` fields) instead.
+// and adopt new config fields) instead.
 const CHANGELOG: &str = include_str!("../CHANGELOG.md");
 
 const UPGRADE_HEADER: &str = "\
 # Upgrading repocat
 
 Update the tool with `cargo install bcl-repocat` (add `--force` to replace an
-older build), then adopt any new `.repo.yml` fields below. Older versions reject
+older build), then adopt any new config fields below. Older versions reject
 files that use newer fields with an `unknown field` error.
 
 ";
@@ -405,7 +316,7 @@ fn run_changelog(raw_args: &[String]) -> Result<ExitCode> {
         print!("{UPGRADE_HEADER}");
         let notes = extract_upgrade_notes(CHANGELOG, since.as_deref())?;
         if notes.trim().is_empty() {
-            println!("No `.repo.yml` schema changes to adopt in this range.");
+            println!("No config schema changes to adopt in this range.");
         } else {
             print!("{notes}");
         }
@@ -556,7 +467,7 @@ fn run_repo_add(raw_args: &[String]) -> Result<ExitCode> {
         .with_context(|| format!("writing {}", path.display()))?;
     eprintln!("added repo `{name}` to {}", path.display());
 
-    config::load(&path).with_context(|| {
+    github::config::load(&path).with_context(|| {
         format!("file wrote but failed to re-parse from {}", path.display())
     })?;
     Ok(ExitCode::SUCCESS)
@@ -824,29 +735,4 @@ set require_semgrep_workflow.
     fn upgrade_notes_reject_invalid_since() {
         assert!(extract_upgrade_notes(SAMPLE_WITH_UPGRADE, Some("nope")).is_err());
     }
-}
-
-fn execute_actions(
-    client: &api::Client,
-    org: &str,
-    repo: &str,
-    findings: &[Finding],
-) -> bool {
-    let actions: Vec<_> = findings.iter().flat_map(|f| f.actions.iter().map(move |a| (f.rule, a))).collect();
-    if actions.is_empty() {
-        println!("\n(nothing to apply)");
-        return true;
-    }
-    println!("\napplying:");
-    let mut all_ok = true;
-    for (rule, action) in actions {
-        match action.execute(client, org, repo) {
-            Ok(()) => println!("  ✓ [{rule}] {}", action.summary()),
-            Err(e) => {
-                println!("  ✗ [{rule}] {}: {e}", action.summary());
-                all_ok = false;
-            }
-        }
-    }
-    all_ok
 }
