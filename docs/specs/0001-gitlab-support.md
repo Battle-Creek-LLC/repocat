@@ -1,6 +1,6 @@
 # Spec 0001 — GitLab support
 
-Status: **Draft**
+Status: **Implemented** (Phases 1–3 shipped in 0.5.0; `init --provider gitlab` added)
 Author: repocat maintainers
 Created: 2026-05-26
 Tracking: adds GitLab as a second, co-equal repository host alongside GitHub.

@@ -1,13 +1,13 @@
 [package]
 name = "bcl-repocat"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2024"
-description = "GitHub repository hardening CLI — audits and reconciles repos against a declarative .repo.yml security baseline."
+description = "GitHub and GitLab repository hardening CLI — audits and reconciles repos against a declarative security baseline."
 license = "MIT"
 repository = "https://github.com/Battle-Creek-LLC/repocat"
 readme = "README.md"
 categories = ["command-line-utilities", "development-tools"]
-keywords = ["github", "security", "hardening", "compliance", "cli"]
+keywords = ["github", "gitlab", "security", "hardening", "cli"]
 
 # Published to crates.io as `bcl-repocat`; the installed binary stays `repocat`.
 [[bin]]

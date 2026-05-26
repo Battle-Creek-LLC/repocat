@@ -151,7 +151,7 @@ pub struct SecuritySettings {
 
 impl RepoConfig {
     /// True when no field has been set. Used to enforce that `defaults:` is
-    /// present and non-empty in `.repo.yml`.
+    /// present and non-empty in `.repo.github.yml`.
     pub fn is_empty(&self) -> bool {
         self.branch_protection.is_none()
             && self.merge.is_none()

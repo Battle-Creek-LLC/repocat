@@ -1,9 +1,8 @@
 # Using repocat with GitLab
 
-> **Status: planned.** GitLab support is specified but not yet shipped. This
-> page documents the intended behavior; see
-> [`docs/specs/0001-gitlab-support.md`](specs/0001-gitlab-support.md) for the
-> design and current phase. Until it lands, `repocat` targets GitHub only.
+> **Status: available (since 0.5.0).** `audit`, `diff`, and `apply` work for
+> GitLab projects. See [`docs/specs/0001-gitlab-support.md`](specs/0001-gitlab-support.md)
+> for the design.
 
 `repocat` hardens GitLab **projects** the same way it hardens GitHub repos:
 `audit` / `diff` / `apply` against a declarative baseline. GitLab and GitHub are

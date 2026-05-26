@@ -283,14 +283,14 @@ fn run_init(raw_args: &[String]) -> Result<ExitCode> {
 // `changelog` prints the release notes baked into the binary at build time, so
 // the output always matches the installed version. `--since` filters to newer
 // entries; `--upgrade` prints the consumer upgrade guide (how to update the tool
-// and adopt new `.repo.yml` fields) instead.
+// and adopt new config fields) instead.
 const CHANGELOG: &str = include_str!("../CHANGELOG.md");
 
 const UPGRADE_HEADER: &str = "\
 # Upgrading repocat
 
 Update the tool with `cargo install bcl-repocat` (add `--force` to replace an
-older build), then adopt any new `.repo.yml` fields below. Older versions reject
+older build), then adopt any new config fields below. Older versions reject
 files that use newer fields with an `unknown field` error.
 
 ";
@@ -316,7 +316,7 @@ fn run_changelog(raw_args: &[String]) -> Result<ExitCode> {
         print!("{UPGRADE_HEADER}");
         let notes = extract_upgrade_notes(CHANGELOG, since.as_deref())?;
         if notes.trim().is_empty() {
-            println!("No `.repo.yml` schema changes to adopt in this range.");
+            println!("No config schema changes to adopt in this range.");
         } else {
             print!("{notes}");
         }
