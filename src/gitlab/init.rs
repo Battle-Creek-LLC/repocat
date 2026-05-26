@@ -122,8 +122,9 @@ pub fn template(group: &str, host: &str, project: &str) -> String {
          \x20\x20protected_branches:\n\
          \x20\x20\x20\x20- name: main\n\
          \x20\x20\x20\x20\x20\x20allow_force_push: false\n\
-         \x20\x20\x20\x20\x20\x20push_access_level: maintainer\n\
-         \x20\x20\x20\x20\x20\x20merge_access_level: developer\n\
+         \x20\x20\x20\x20\x20\x20# no_one = nobody pushes directly; all changes go through merge requests\n\
+         \x20\x20\x20\x20\x20\x20push_access_level: no_one\n\
+         \x20\x20\x20\x20\x20\x20merge_access_level: maintainer\n\
          \x20\x20\x20\x20\x20\x20## PREMIUM/ULTIMATE — enforce CODEOWNERS approval on this branch:\n\
          \x20\x20\x20\x20\x20\x20code_owner_approval_required: true\n\
          \x20\x20## PREMIUM/ULTIMATE — merge request approval rules:\n\
