@@ -5,10 +5,10 @@
 //! report drift but push no actions. A block the user did not configure reports
 //! `Skip`.
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use serde_json::{json, Value};
 
-use super::api::Client;
+use super::api::{ApiError, Client};
 use super::config::ProjectConfig;
 use crate::finding::{Severity, Status};
 
@@ -43,10 +43,20 @@ impl Action {
                 client.put_project(project, body)?;
             }
             // GitLab has no single replace endpoint for a protected branch, so
-            // delete-then-create reconciles it. delete is idempotent (404 ok).
+            // delete-then-create reconciles it (delete is idempotent, 404 ok).
+            // If the re-create fails after the delete succeeded, the branch is
+            // left with NO protection — surface that loudly so it can't slip by
+            // in a fleet run. (On Free/CE the Premium `code_owner_approval_required`
+            // in `body` is a likely culprit for the create failing.)
             Action::SetProtectedBranch { branch, body, .. } => {
                 client.delete_protected_branch(project, branch)?;
-                client.create_protected_branch(project, body)?;
+                client.create_protected_branch(project, body).map_err(|e| {
+                    anyhow!(
+                        "BRANCH LEFT UNPROTECTED: removed protection on `{branch}` but failed to \
+                         re-create it: {e}. `{branch}` currently has NO branch protection — \
+                         re-run `repocat apply` to restore it, or protect it manually now."
+                    )
+                })?;
             }
             Action::CreateApprovalRule { body, .. } => {
                 client.create_approval_rule(project, body)?;
@@ -374,11 +384,12 @@ fn members(client: &Client, project: &str, cfg: &ProjectConfig) -> Result<RuleRe
 
 // --- helpers -------------------------------------------------------------
 
-/// True when an API error is a 403 — used to degrade tier-gated endpoints
-/// (approval rules, MR approval config, push rules) to `Skip` on instances
-/// (Community/free) that don't offer them, rather than aborting the audit.
+/// True when an API error carried HTTP 403 — used to degrade tier-gated
+/// endpoints (approval rules, MR approval config, push rules) to `Skip` on
+/// Community/free instances that don't offer them, rather than aborting the
+/// audit. Classifies on the structured status, not the message text.
 fn is_forbidden(e: &anyhow::Error) -> bool {
-    e.to_string().contains(" 403")
+    e.downcast_ref::<ApiError>().is_some_and(|a| a.status == Some(403))
 }
 
 // --- comparison helpers --------------------------------------------------
@@ -508,11 +519,14 @@ mod tests {
 
     #[test]
     fn forbidden_detects_403_only() {
-        assert!(is_forbidden(&anyhow::anyhow!(
-            "GET https://h/api/v4/projects/x/approval_rules → 403: {{\"message\":\"403 Forbidden\"}}"
-        )));
-        assert!(!is_forbidden(&anyhow::anyhow!("GET ... → 404: not found")));
-        assert!(!is_forbidden(&anyhow::anyhow!("transport error")));
+        let api = |status| {
+            anyhow!(ApiError { status, message: "x".into() })
+        };
+        assert!(is_forbidden(&api(Some(403))));
+        assert!(!is_forbidden(&api(Some(404))));
+        assert!(!is_forbidden(&api(None)));
+        // A plain error that merely mentions 403 in its text must NOT match.
+        assert!(!is_forbidden(&anyhow!("body said 403 somewhere")));
     }
 
     #[test]

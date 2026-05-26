@@ -243,14 +243,32 @@ impl Client {
     }
 }
 
+/// A GitLab API error carrying the HTTP status (when the failure was an HTTP
+/// response rather than transport). Callers classify by `status` — e.g.
+/// `is_forbidden` for tier-gated 403s — instead of matching the message text.
+#[derive(Debug)]
+pub struct ApiError {
+    pub status: Option<u16>,
+    pub message: String,
+}
+
+impl std::fmt::Display for ApiError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for ApiError {}
+
 fn map_err(method: &str, url: &str, e: ureq::Error) -> anyhow::Error {
-    match e {
+    let err = match e {
         ureq::Error::Status(code, r) => {
             let body = r.into_string().unwrap_or_default();
-            anyhow!("{method} {url} → {code}: {body}")
+            ApiError { status: Some(code), message: format!("{method} {url} → {code}: {body}") }
         }
-        other => anyhow!("transport error on {method} {url}: {other}"),
-    }
+        other => ApiError { status: None, message: format!("transport error on {method} {url}: {other}") },
+    };
+    anyhow::Error::new(err)
 }
 
 // --- response types ------------------------------------------------------
