@@ -106,8 +106,16 @@ pub fn template(group: &str, host: &str, project: &str) -> String {
     };
 
     format!(
-        "# repocat GitLab config — audited/applied with `repocat audit|diff`.\n\
+        "# repocat GitLab config — audited and reconciled with `repocat audit|diff|apply`.\n\
          # Authored in GitLab's native vocabulary; see `repocat init --provider gitlab --stdout`.\n\
+         ##\n\
+         ## Secure-by-default: every hardening rule below is ENABLED. Lines marked\n\
+         ## `## PREMIUM/ULTIMATE` need a paid GitLab tier. On Free/CE:\n\
+         ##   - approval_rules and push_rules return 403, so repocat marks them `skip`;\n\
+         ##   - reset_approvals_on_push and code_owner_approval_required are silently\n\
+         ##     ignored by GitLab, so audit keeps flagging them (and apply will not\n\
+         ##     falsely claim reset_approvals_on_push succeeded).\n\
+         ## Comment those lines out if you are on Free/CE and want a quieter audit.\n\
          group: {group}\n\
          {host_line}\
          defaults:\n\
@@ -116,10 +124,13 @@ pub fn template(group: &str, host: &str, project: &str) -> String {
          \x20\x20\x20\x20\x20\x20allow_force_push: false\n\
          \x20\x20\x20\x20\x20\x20push_access_level: maintainer\n\
          \x20\x20\x20\x20\x20\x20merge_access_level: developer\n\
-         \x20\x20\x20\x20\x20\x20# code_owner_approval_required requires GitLab Premium/Ultimate.\n\
+         \x20\x20\x20\x20\x20\x20## PREMIUM/ULTIMATE — enforce CODEOWNERS approval on this branch:\n\
+         \x20\x20\x20\x20\x20\x20code_owner_approval_required: true\n\
+         \x20\x20## PREMIUM/ULTIMATE — merge request approval rules:\n\
          \x20\x20approval_rules:\n\
          \x20\x20\x20\x20- name: default\n\
          \x20\x20\x20\x20\x20\x20approvals_required: 1\n\
+         \x20\x20## PREMIUM/ULTIMATE — reset approvals when new commits are pushed:\n\
          \x20\x20merge_request_approvals:\n\
          \x20\x20\x20\x20reset_approvals_on_push: true\n\
          \x20\x20project_settings:\n\
@@ -128,7 +139,9 @@ pub fn template(group: &str, host: &str, project: &str) -> String {
          \x20\x20\x20\x20remove_source_branch_after_merge: true\n\
          \x20\x20\x20\x20only_allow_merge_if_pipeline_succeeds: true\n\
          \x20\x20\x20\x20only_allow_merge_if_all_discussions_are_resolved: true\n\
-         \x20\x20# push_rules (e.g. reject_unsigned_commits) requires GitLab Premium/Ultimate.\n\
+         \x20\x20## PREMIUM/ULTIMATE — reject unsigned commits:\n\
+         \x20\x20push_rules:\n\
+         \x20\x20\x20\x20reject_unsigned_commits: true\n\
          \x20\x20required_files:\n\
          \x20\x20\x20\x20- README.md\n\
          \x20\x20codeowners: true\n\
@@ -212,6 +225,13 @@ mod tests {
         assert_eq!(cfg.host.as_deref(), Some("git.example.com"));
         assert!(cfg.projects.contains_key("widget"));
         assert!(!cfg.defaults.is_empty());
+        // Secure-by-default: Premium features ship enabled, with markers.
+        assert!(rendered.contains("## PREMIUM/ULTIMATE"), "Premium markers present");
+        assert_eq!(cfg.defaults.push_rules.unwrap().reject_unsigned_commits, Some(true));
+        assert_eq!(
+            cfg.defaults.protected_branches[0].code_owner_approval_required,
+            Some(true)
+        );
     }
 
     #[test]

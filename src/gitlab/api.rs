@@ -212,11 +212,25 @@ impl Client {
     }
 
     pub fn set_approvals_config(&self, project: &str, body: &serde_json::Value) -> Result<()> {
-        self.send_json(
+        let resp = self.send_json(
             "POST",
             &format!("/projects/{}/approvals", urlencode(project)),
             body,
         )?;
+        // GitLab Free/CE accepts this POST with 200 but silently ignores
+        // `reset_approvals_on_push` (a Premium/Ultimate feature). Verify the
+        // returned config actually changed so apply reports an honest failure
+        // instead of a false success.
+        if let Some(want) = body.get("reset_approvals_on_push").and_then(|v| v.as_bool()) {
+            let got: ApprovalsConfig = resp.into_json()?;
+            if got.reset_approvals_on_push != Some(want) {
+                return Err(anyhow!(
+                    "reset_approvals_on_push was not applied (still {:?}) — merge request \
+                     approvals require GitLab Premium/Ultimate",
+                    got.reset_approvals_on_push
+                ));
+            }
+        }
         Ok(())
     }
 
