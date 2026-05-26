@@ -2,7 +2,7 @@ use anyhow::{anyhow, Result};
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
 
-use crate::rules::{Finding, Severity, Status};
+use crate::finding::{Finding, Severity, Status};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Format {
@@ -134,7 +134,7 @@ fn sarif_level(sev: Severity) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::rules::Finding;
+    use crate::finding::Finding;
 
     fn fail_finding(rule: &'static str, sev: Severity, msg: &str) -> Finding {
         Finding {
@@ -143,7 +143,6 @@ mod tests {
             nist: "AC-3, CM-3",
             status: Status::Fail,
             messages: vec![msg.into()],
-            actions: vec![],
         }
     }
 
@@ -154,7 +153,6 @@ mod tests {
             nist: "CM-3",
             status: Status::Pass,
             messages: vec![],
-            actions: vec![],
         }
     }
 

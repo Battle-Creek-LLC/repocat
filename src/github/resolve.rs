@@ -1,4 +1,4 @@
-use crate::config::{
+use super::config::{
     ActionsSettings, BranchProtection, MergeSettings, RepoConfig, SecuritySettings, TeamSpec,
 };
 
