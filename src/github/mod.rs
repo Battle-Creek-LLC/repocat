@@ -14,22 +14,12 @@ mod rules;
 use anyhow::{anyhow, Result};
 use std::path::Path;
 
-use crate::finding::{Finding, Severity, Status};
+use crate::finding::{Finding, Outcome, Severity, Status};
 use crate::output::Format;
 use crate::{Args, Mode};
 
 use self::config::Config;
 use self::rules::Finding as RuleResult;
-
-/// What a provider run hands back to `main` for cross-provider rendering and
-/// exit accounting. Text output and apply execution already happened inside
-/// the run; `findings` exists for deferred JSON/SARIF rendering.
-pub struct Outcome {
-    pub namespace: String,
-    pub findings: Vec<(String, Vec<Finding>)>,
-    pub any_error: bool,
-    pub any_apply_error: bool,
-}
 
 /// Map a GitHub rule result down to the shared, action-free reporting type.
 fn to_shared(r: &RuleResult) -> Finding {

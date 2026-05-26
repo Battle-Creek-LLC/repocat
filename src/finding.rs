@@ -49,3 +49,14 @@ pub struct Finding {
     pub status: Status,
     pub messages: Vec<String>,
 }
+
+/// What a provider run hands back to `main` for cross-provider rendering and
+/// exit accounting. Text output and (for GitHub) apply execution already
+/// happened inside the run; `findings` exists for deferred JSON/SARIF.
+pub struct Outcome {
+    /// org (GitHub) or group (GitLab) — used to qualify findings in output.
+    pub namespace: String,
+    pub findings: Vec<(String, Vec<Finding>)>,
+    pub any_error: bool,
+    pub any_apply_error: bool,
+}

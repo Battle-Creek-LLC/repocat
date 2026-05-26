@@ -27,6 +27,7 @@ dependencies = [
  "anyhow",
  "base64",
  "keyring",
+ "rustls",
  "serde",
  "serde_json",
  "serde_yaml_ng",

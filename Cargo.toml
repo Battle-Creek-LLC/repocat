@@ -22,6 +22,9 @@ bin-dir = "repocat{ binary-ext }"
 [dependencies]
 keyring = { version = "3", features = ["apple-native", "linux-native", "sync-secret-service"] }
 ureq = { version = "2", features = ["json"] }
+# Matches the rustls + ring backend ureq already pulls; used only to build an
+# agent that skips TLS verification when glab is configured to (gitlab::api).
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 base64 = "0.22"

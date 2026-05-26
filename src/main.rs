@@ -1,5 +1,6 @@
 mod finding;
 mod github;
+mod gitlab;
 mod output;
 mod provider;
 
@@ -126,28 +127,19 @@ fn run(mode: Mode, raw_args: &[String]) -> Result<ExitCode> {
 
     let mut any_error = false;
     let mut any_apply_error = false;
-    // Only one host produces deferred (JSON/SARIF) output today, since `--format`
-    // implies `audit` and GitLab is not yet wired up. Hold the last outcome to
-    // render after the loop.
-    let mut deferred: Option<github::Outcome> = None;
+    // `--format` implies `audit`, and in practice at most one config of each
+    // kind is present, so holding the last outcome covers JSON/SARIF rendering.
+    let mut deferred: Option<finding::Outcome> = None;
 
     for (prov, path) in configs {
-        match prov {
-            Provider::GitHub => {
-                let outcome = github::run(mode, &path, &args)?;
-                any_error |= outcome.any_error;
-                any_apply_error |= outcome.any_apply_error;
-                if args.format != Format::Text {
-                    deferred = Some(outcome);
-                }
-            }
-            Provider::GitLab => {
-                return Err(anyhow!(
-                    "GitLab support is not yet implemented for {} \
-                     (design: docs/specs/0001-gitlab-support.md)",
-                    path.display()
-                ));
-            }
+        let outcome = match prov {
+            Provider::GitHub => github::run(mode, &path, &args)?,
+            Provider::GitLab => gitlab::run(mode, &path, &args)?,
+        };
+        any_error |= outcome.any_error;
+        any_apply_error |= outcome.any_apply_error;
+        if args.format != Format::Text {
+            deferred = Some(outcome);
         }
     }
 
