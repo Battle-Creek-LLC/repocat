@@ -208,7 +208,13 @@ fn approval_rules(client: &Client, project: &str, cfg: &ProjectConfig) -> Result
     if cfg.approval_rules.is_empty() {
         return Ok(r.skip("not configured"));
     }
-    let actual = client.list_approval_rules(project)?;
+    let actual = match client.list_approval_rules(project) {
+        Ok(a) => a,
+        Err(e) if is_forbidden(&e) => {
+            return Ok(r.skip("approval rules require GitLab Premium/Ultimate"));
+        }
+        Err(e) => return Err(e),
+    };
     for want in &cfg.approval_rules {
         let Some(got) = actual.iter().find(|a| a.name == want.name) else {
             r.fail(format!("approval rule `{}` is missing", want.name));
@@ -240,7 +246,13 @@ fn merge_request_approvals(client: &Client, project: &str, cfg: &ProjectConfig) 
     let Some(want) = cfg.merge_request_approvals.as_ref() else {
         return Ok(r.skip("not configured"));
     };
-    let actual = client.get_approvals_config(project)?;
+    let actual = match client.get_approvals_config(project) {
+        Ok(a) => a,
+        Err(e) if is_forbidden(&e) => {
+            return Ok(r.skip("merge request approval config requires GitLab Premium/Ultimate"));
+        }
+        Err(e) => return Err(e),
+    };
     if let Some(w) = want.reset_approvals_on_push {
         if actual.reset_approvals_on_push != Some(w) {
             r.fail(format!("reset_approvals_on_push is {:?}, want {w}", actual.reset_approvals_on_push));
@@ -262,7 +274,7 @@ fn push_rules(client: &Client, project: &str, cfg: &ProjectConfig) -> Result<Rul
         Ok(a) => a,
         // Push rules are a Premium/Ultimate feature; a 403 means the tier can't
         // enforce this, which is a Skip rather than a failure.
-        Err(e) if e.to_string().contains(" 403") => {
+        Err(e) if is_forbidden(&e) => {
             return Ok(r.skip("push rules require GitLab Premium/Ultimate"));
         }
         Err(e) => return Err(e),
@@ -358,6 +370,15 @@ fn members(client: &Client, project: &str, cfg: &ProjectConfig) -> Result<RuleRe
         r.messages.push("note: group-share auditing is not yet implemented".into());
     }
     Ok(r)
+}
+
+// --- helpers -------------------------------------------------------------
+
+/// True when an API error is a 403 — used to degrade tier-gated endpoints
+/// (approval rules, MR approval config, push rules) to `Skip` on instances
+/// (Community/free) that don't offer them, rather than aborting the audit.
+fn is_forbidden(e: &anyhow::Error) -> bool {
+    e.to_string().contains(" 403")
 }
 
 // --- comparison helpers --------------------------------------------------
@@ -483,6 +504,15 @@ mod tests {
         };
         let r = project_settings(&proj("merge"), &cfg);
         assert_eq!(r.status, Status::Pass);
+    }
+
+    #[test]
+    fn forbidden_detects_403_only() {
+        assert!(is_forbidden(&anyhow::anyhow!(
+            "GET https://h/api/v4/projects/x/approval_rules → 403: {{\"message\":\"403 Forbidden\"}}"
+        )));
+        assert!(!is_forbidden(&anyhow::anyhow!("GET ... → 404: not found")));
+        assert!(!is_forbidden(&anyhow::anyhow!("transport error")));
     }
 
     #[test]
