@@ -1,13 +1,69 @@
-//! GitLab audit rules. Each reads live state via the API client, compares it to
-//! the `.repo.gitlab.yml` desired state, and reports a [`RuleResult`]. These are
-//! audit-only for now: drift is described in `planned`, but `apply` execution is
-//! not yet wired (Phase 3). A block the user did not configure reports `Skip`.
+//! GitLab audit/apply rules. Each reads live state via the API client, compares
+//! it to the `.repo.gitlab.yml` desired state, and reports a [`RuleResult`].
+//! Rules that can self-heal also push an executable [`Action`] that `apply`
+//! runs; audit-only rules (required_files, codeowners, ci_security, members)
+//! report drift but push no actions. A block the user did not configure reports
+//! `Skip`.
 
 use anyhow::Result;
+use serde_json::{json, Value};
 
 use super::api::Client;
 use super::config::ProjectConfig;
 use crate::finding::{Severity, Status};
+
+/// An executable reconciliation step. Mirrors the GitHub provider's `Action`:
+/// `summary()` is the human-readable line shown in diff/apply output and
+/// `execute()` performs the mutation against the GitLab API.
+#[derive(Debug)]
+pub enum Action {
+    PutProject { summary: String, body: Value },
+    SetProtectedBranch { summary: String, branch: String, body: Value },
+    CreateApprovalRule { summary: String, body: Value },
+    UpdateApprovalRule { summary: String, rule_id: u64, body: Value },
+    SetApprovalsConfig { summary: String, body: Value },
+    SetPushRule { summary: String, body: Value, exists: bool },
+}
+
+impl Action {
+    pub fn summary(&self) -> &str {
+        match self {
+            Action::PutProject { summary, .. } => summary,
+            Action::SetProtectedBranch { summary, .. } => summary,
+            Action::CreateApprovalRule { summary, .. } => summary,
+            Action::UpdateApprovalRule { summary, .. } => summary,
+            Action::SetApprovalsConfig { summary, .. } => summary,
+            Action::SetPushRule { summary, .. } => summary,
+        }
+    }
+
+    pub fn execute(&self, client: &Client, project: &str) -> Result<()> {
+        match self {
+            Action::PutProject { body, .. } => {
+                client.put_project(project, body)?;
+            }
+            // GitLab has no single replace endpoint for a protected branch, so
+            // delete-then-create reconciles it. delete is idempotent (404 ok).
+            Action::SetProtectedBranch { branch, body, .. } => {
+                client.delete_protected_branch(project, branch)?;
+                client.create_protected_branch(project, body)?;
+            }
+            Action::CreateApprovalRule { body, .. } => {
+                client.create_approval_rule(project, body)?;
+            }
+            Action::UpdateApprovalRule { rule_id, body, .. } => {
+                client.update_approval_rule(project, *rule_id, body)?;
+            }
+            Action::SetApprovalsConfig { body, .. } => {
+                client.set_approvals_config(project, body)?;
+            }
+            Action::SetPushRule { body, exists, .. } => {
+                client.set_push_rule(project, body, *exists)?;
+            }
+        }
+        Ok(())
+    }
+}
 
 #[derive(Debug)]
 pub struct RuleResult {
@@ -16,20 +72,20 @@ pub struct RuleResult {
     pub nist: &'static str,
     pub status: Status,
     pub messages: Vec<String>,
-    /// Human-readable description of what `apply` would change. Display-only.
-    pub planned: Vec<String>,
+    /// Executable reconciliation steps `apply` runs. Empty for audit-only rules.
+    pub actions: Vec<Action>,
 }
 
 impl RuleResult {
     fn new(rule: &'static str, severity: Severity, nist: &'static str) -> Self {
-        Self { rule, severity, nist, status: Status::Pass, messages: Vec::new(), planned: Vec::new() }
+        Self { rule, severity, nist, status: Status::Pass, messages: Vec::new(), actions: Vec::new() }
     }
     fn fail(&mut self, msg: impl Into<String>) {
         self.status = Status::Fail;
         self.messages.push(msg.into());
     }
-    fn plan(&mut self, msg: impl Into<String>) {
-        self.planned.push(msg.into());
+    fn act(&mut self, action: Action) {
+        self.actions.push(action);
     }
     fn skip(mut self, msg: impl Into<String>) -> Self {
         self.status = Status::Skip;
@@ -62,11 +118,21 @@ fn project_settings(proj: &super::api::Project, cfg: &ProjectConfig) -> RuleResu
     let Some(want) = cfg.project_settings.as_ref() else {
         return r.skip("not configured");
     };
-    check_str(&mut r, "merge_method", want.merge_method.as_deref(), proj.merge_method.as_deref());
-    check_str(&mut r, "squash_option", want.squash_option.as_deref(), proj.squash_option.as_deref());
-    check_bool(&mut r, "remove_source_branch_after_merge", want.remove_source_branch_after_merge, proj.remove_source_branch_after_merge);
-    check_bool(&mut r, "only_allow_merge_if_pipeline_succeeds", want.only_allow_merge_if_pipeline_succeeds, proj.only_allow_merge_if_pipeline_succeeds);
-    check_bool(&mut r, "only_allow_merge_if_all_discussions_are_resolved", want.only_allow_merge_if_all_discussions_are_resolved, proj.only_allow_merge_if_all_discussions_are_resolved);
+    // Collect every drifted field into one body so a single PUT /projects/{id}
+    // reconciles them all at once.
+    let mut body = serde_json::Map::new();
+    check_str(&mut r, &mut body, "merge_method", want.merge_method.as_deref(), proj.merge_method.as_deref());
+    check_str(&mut r, &mut body, "squash_option", want.squash_option.as_deref(), proj.squash_option.as_deref());
+    check_bool(&mut r, &mut body, "remove_source_branch_after_merge", want.remove_source_branch_after_merge, proj.remove_source_branch_after_merge);
+    check_bool(&mut r, &mut body, "only_allow_merge_if_pipeline_succeeds", want.only_allow_merge_if_pipeline_succeeds, proj.only_allow_merge_if_pipeline_succeeds);
+    check_bool(&mut r, &mut body, "only_allow_merge_if_all_discussions_are_resolved", want.only_allow_merge_if_all_discussions_are_resolved, proj.only_allow_merge_if_all_discussions_are_resolved);
+    if !body.is_empty() {
+        let fields: Vec<&str> = body.keys().map(String::as_str).collect();
+        r.act(Action::PutProject {
+            summary: format!("update project settings ({})", fields.join(", ")),
+            body: Value::Object(body),
+        });
+    }
     r
 }
 
@@ -77,27 +143,64 @@ fn protected_branches(client: &Client, project: &str, cfg: &ProjectConfig) -> Re
     }
     let actual = client.list_protected_branches(project)?;
     for want in &cfg.protected_branches {
-        let Some(got) = actual.iter().find(|b| b.name == want.name) else {
-            r.fail(format!("branch `{}` is not protected", want.name));
-            r.plan(format!("protect branch `{}`", want.name));
-            continue;
-        };
-        if let Some(w) = want.allow_force_push {
-            if got.allow_force_push != Some(w) {
-                r.fail(format!("`{}`: allow_force_push is {:?}, want {w}", want.name, got.allow_force_push));
-                r.plan(format!("`{}`: set allow_force_push={w}", want.name));
+        let mut drift = false;
+        match actual.iter().find(|b| b.name == want.name) {
+            None => {
+                r.fail(format!("branch `{}` is not protected", want.name));
+                drift = true;
+            }
+            Some(got) => {
+                if let Some(w) = want.allow_force_push {
+                    if got.allow_force_push != Some(w) {
+                        r.fail(format!("`{}`: allow_force_push is {:?}, want {w}", want.name, got.allow_force_push));
+                        drift = true;
+                    }
+                }
+                if let Some(w) = want.code_owner_approval_required {
+                    if got.code_owner_approval_required != Some(w) {
+                        r.fail(format!("`{}`: code_owner_approval_required is {:?}, want {w}", want.name, got.code_owner_approval_required));
+                        drift = true;
+                    }
+                }
+                drift |= check_access(&mut r, &want.name, "push", want.push_access_level.as_deref(), &got.push_access_levels);
+                drift |= check_access(&mut r, &want.name, "merge", want.merge_access_level.as_deref(), &got.merge_access_levels);
             }
         }
-        if let Some(w) = want.code_owner_approval_required {
-            if got.code_owner_approval_required != Some(w) {
-                r.fail(format!("`{}`: code_owner_approval_required is {:?}, want {w}", want.name, got.code_owner_approval_required));
-                r.plan(format!("`{}`: set code_owner_approval_required={w}", want.name));
-            }
+        if drift {
+            r.act(Action::SetProtectedBranch {
+                summary: format!("protect branch `{}`", want.name),
+                branch: want.name.clone(),
+                body: protected_branch_body(want),
+            });
         }
-        check_access(&mut r, &want.name, "push", want.push_access_level.as_deref(), &got.push_access_levels);
-        check_access(&mut r, &want.name, "merge", want.merge_access_level.as_deref(), &got.merge_access_levels);
     }
     Ok(r)
+}
+
+/// Build the POST body for a protected branch, including only the keys the
+/// config set. Access-level names map to GitLab ints via `branch_access_int`;
+/// an unknown name is silently dropped here (it was already reported as drift
+/// by `check_access`, which is the only place that can fail on it).
+fn protected_branch_body(want: &super::config::ProtectedBranch) -> Value {
+    let mut body = serde_json::Map::new();
+    body.insert("name".into(), json!(want.name));
+    if let Some(b) = want.allow_force_push {
+        body.insert("allow_force_push".into(), json!(b));
+    }
+    if let Some(name) = want.push_access_level.as_deref() {
+        if let Some(i) = branch_access_int(name) {
+            body.insert("push_access_level".into(), json!(i));
+        }
+    }
+    if let Some(name) = want.merge_access_level.as_deref() {
+        if let Some(i) = branch_access_int(name) {
+            body.insert("merge_access_level".into(), json!(i));
+        }
+    }
+    if let Some(b) = want.code_owner_approval_required {
+        body.insert("code_owner_approval_required".into(), json!(b));
+    }
+    Value::Object(body)
 }
 
 fn approval_rules(client: &Client, project: &str, cfg: &ProjectConfig) -> Result<RuleResult> {
@@ -109,13 +212,23 @@ fn approval_rules(client: &Client, project: &str, cfg: &ProjectConfig) -> Result
     for want in &cfg.approval_rules {
         let Some(got) = actual.iter().find(|a| a.name == want.name) else {
             r.fail(format!("approval rule `{}` is missing", want.name));
-            r.plan(format!("create approval rule `{}`", want.name));
+            r.act(Action::CreateApprovalRule {
+                summary: format!("create approval rule `{}`", want.name),
+                body: json!({
+                    "name": want.name,
+                    "approvals_required": want.approvals_required.unwrap_or(0),
+                }),
+            });
             continue;
         };
         if let Some(w) = want.approvals_required {
             if got.approvals_required != Some(w) {
                 r.fail(format!("`{}`: approvals_required is {:?}, want {w}", want.name, got.approvals_required));
-                r.plan(format!("`{}`: set approvals_required={w}", want.name));
+                r.act(Action::UpdateApprovalRule {
+                    summary: format!("`{}`: set approvals_required={w}", want.name),
+                    rule_id: got.id,
+                    body: json!({ "approvals_required": w }),
+                });
             }
         }
     }
@@ -128,7 +241,15 @@ fn merge_request_approvals(client: &Client, project: &str, cfg: &ProjectConfig) 
         return Ok(r.skip("not configured"));
     };
     let actual = client.get_approvals_config(project)?;
-    check_bool(&mut r, "reset_approvals_on_push", want.reset_approvals_on_push, actual.reset_approvals_on_push);
+    if let Some(w) = want.reset_approvals_on_push {
+        if actual.reset_approvals_on_push != Some(w) {
+            r.fail(format!("reset_approvals_on_push is {:?}, want {w}", actual.reset_approvals_on_push));
+            r.act(Action::SetApprovalsConfig {
+                summary: format!("set reset_approvals_on_push={w}"),
+                body: json!({ "reset_approvals_on_push": w }),
+            });
+        }
+    }
     Ok(r)
 }
 
@@ -150,7 +271,11 @@ fn push_rules(client: &Client, project: &str, cfg: &ProjectConfig) -> Result<Rul
         let got = actual.as_ref().and_then(|p| p.reject_unsigned_commits);
         if got != Some(w) {
             r.fail(format!("reject_unsigned_commits is {got:?}, want {w}"));
-            r.plan(format!("set push rule reject_unsigned_commits={w}"));
+            r.act(Action::SetPushRule {
+                summary: format!("set push rule reject_unsigned_commits={w}"),
+                body: json!({ "reject_unsigned_commits": w }),
+                exists: actual.is_some(),
+            });
         }
     }
     Ok(r)
@@ -198,10 +323,11 @@ fn ci_security(client: &Client, project: &str, git_ref: &str, cfg: &ProjectConfi
         return Ok(r);
     };
     let lower = yaml.to_lowercase();
+    // Audit-only: CI YAML is owned by the repo, so we report drift but never
+    // mutate the file. Remediation is a PR by the repo's maintainers.
     let mut want_template = |enabled: Option<bool>, needle: &str, label: &str| {
         if enabled == Some(true) && !lower.contains(&needle.to_lowercase()) {
             r.fail(format!("{label} not included in .gitlab-ci.yml"));
-            r.plan(format!("include the {label} template"));
         }
     };
     want_template(want.require_sast, "SAST.gitlab-ci.yml", "SAST");
@@ -236,20 +362,32 @@ fn members(client: &Client, project: &str, cfg: &ProjectConfig) -> Result<RuleRe
 
 // --- comparison helpers --------------------------------------------------
 
-fn check_str(r: &mut RuleResult, field: &str, want: Option<&str>, got: Option<&str>) {
+fn check_str(
+    r: &mut RuleResult,
+    body: &mut serde_json::Map<String, Value>,
+    field: &str,
+    want: Option<&str>,
+    got: Option<&str>,
+) {
     if let Some(w) = want {
         if got != Some(w) {
             r.fail(format!("{field} is {:?}, want `{w}`", got.unwrap_or("unset")));
-            r.plan(format!("set {field}=`{w}`"));
+            body.insert(field.into(), json!(w));
         }
     }
 }
 
-fn check_bool(r: &mut RuleResult, field: &str, want: Option<bool>, got: Option<bool>) {
+fn check_bool(
+    r: &mut RuleResult,
+    body: &mut serde_json::Map<String, Value>,
+    field: &str,
+    want: Option<bool>,
+    got: Option<bool>,
+) {
     if let Some(w) = want {
         if got != Some(w) {
             r.fail(format!("{field} is {got:?}, want {w}"));
-            r.plan(format!("set {field}={w}"));
+            body.insert(field.into(), json!(w));
         }
     }
 }
@@ -264,23 +402,27 @@ fn branch_access_int(name: &str) -> Option<i64> {
     }
 }
 
+/// Returns true when the access level drifts (so the caller can decide to push
+/// a reconcile action). An unknown access-level name is reported as a failure
+/// but returns false: we can't construct a valid body for it.
 fn check_access(
     r: &mut RuleResult,
     branch: &str,
     which: &str,
     want: Option<&str>,
     got: &[super::api::AccessLevelEntry],
-) {
-    let Some(name) = want else { return };
+) -> bool {
+    let Some(name) = want else { return false };
     let Some(want_int) = branch_access_int(name) else {
         r.fail(format!("`{branch}`: unknown {which}_access_level `{name}` (want no_one|developer|maintainer)"));
-        return;
+        return false;
     };
     if !got.iter().any(|e| e.access_level == want_int) {
         let actual: Vec<String> = got.iter().map(|e| e.access_level.to_string()).collect();
         r.fail(format!("`{branch}`: {which} access is [{}], want `{name}` ({want_int})", actual.join(", ")));
-        r.plan(format!("`{branch}`: set {which}_access_level=`{name}`"));
+        return true;
     }
+    false
 }
 
 #[cfg(test)]
@@ -317,7 +459,16 @@ mod tests {
         let r = project_settings(&proj("merge"), &cfg);
         assert_eq!(r.status, Status::Fail);
         assert!(r.messages[0].contains("merge_method"));
-        assert!(r.planned.iter().any(|p| p.contains("set merge_method=`ff`")));
+        // Drift produces a single PutProject action whose body carries the
+        // desired merge_method and whose summary names the field.
+        assert_eq!(r.actions.len(), 1);
+        match &r.actions[0] {
+            Action::PutProject { summary, body } => {
+                assert!(summary.contains("merge_method"), "summary: {summary}");
+                assert_eq!(body["merge_method"], serde_json::json!("ff"));
+            }
+            other => panic!("expected PutProject, got {other:?}"),
+        }
     }
 
     #[test]

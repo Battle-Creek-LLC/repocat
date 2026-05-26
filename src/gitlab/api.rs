@@ -139,6 +139,94 @@ impl Client {
     pub fn list_direct_members(&self, project: &str) -> Result<Vec<Member>> {
         self.get_all(&format!("/projects/{}/members", urlencode(project)))
     }
+
+    /// Sends a JSON body via the given method, mapping non-2xx and transport
+    /// errors through the shared `map_err`. Returns the raw response so callers
+    /// that need the body (e.g. to read an assigned id) can deserialize it.
+    fn send_json(
+        &self,
+        method: &str,
+        path: &str,
+        body: &serde_json::Value,
+    ) -> Result<ureq::Response> {
+        let url = format!("{}{path}", self.base_url);
+        self.req(method, &url)
+            .send_json(body.clone())
+            .map_err(|e| map_err(method, &url, e))
+    }
+
+    /// Issues a DELETE, treating a 404 as success so the operation is
+    /// idempotent (deleting something that no longer exists is a no-op).
+    fn delete(&self, path: &str) -> Result<()> {
+        let url = format!("{}{path}", self.base_url);
+        match self.req("DELETE", &url).call() {
+            Ok(_) => Ok(()),
+            Err(ureq::Error::Status(404, _)) => Ok(()),
+            Err(e) => Err(map_err("DELETE", &url, e)),
+        }
+    }
+
+    pub fn put_project(&self, project: &str, body: &serde_json::Value) -> Result<()> {
+        self.send_json("PUT", &format!("/projects/{}", urlencode(project)), body)?;
+        Ok(())
+    }
+
+    pub fn delete_protected_branch(&self, project: &str, branch: &str) -> Result<()> {
+        self.delete(&format!(
+            "/projects/{}/protected_branches/{}",
+            urlencode(project),
+            urlencode(branch)
+        ))
+    }
+
+    pub fn create_protected_branch(&self, project: &str, body: &serde_json::Value) -> Result<()> {
+        self.send_json(
+            "POST",
+            &format!("/projects/{}/protected_branches", urlencode(project)),
+            body,
+        )?;
+        Ok(())
+    }
+
+    pub fn create_approval_rule(&self, project: &str, body: &serde_json::Value) -> Result<()> {
+        self.send_json(
+            "POST",
+            &format!("/projects/{}/approval_rules", urlencode(project)),
+            body,
+        )?;
+        Ok(())
+    }
+
+    pub fn update_approval_rule(
+        &self,
+        project: &str,
+        rule_id: u64,
+        body: &serde_json::Value,
+    ) -> Result<()> {
+        self.send_json(
+            "PUT",
+            &format!("/projects/{}/approval_rules/{rule_id}", urlencode(project)),
+            body,
+        )?;
+        Ok(())
+    }
+
+    pub fn set_approvals_config(&self, project: &str, body: &serde_json::Value) -> Result<()> {
+        self.send_json(
+            "POST",
+            &format!("/projects/{}/approvals", urlencode(project)),
+            body,
+        )?;
+        Ok(())
+    }
+
+    /// Push rules use POST to create and PUT to update the single rule on a
+    /// project; the caller passes `exists` so we pick the right verb.
+    pub fn set_push_rule(&self, project: &str, body: &serde_json::Value, exists: bool) -> Result<()> {
+        let method = if exists { "PUT" } else { "POST" };
+        self.send_json(method, &format!("/projects/{}/push_rule", urlencode(project)), body)?;
+        Ok(())
+    }
 }
 
 fn map_err(method: &str, url: &str, e: ureq::Error) -> anyhow::Error {
@@ -181,6 +269,7 @@ pub struct AccessLevelEntry {
 
 #[derive(Debug, Deserialize)]
 pub struct ApprovalRule {
+    pub id: u64,
     pub name: String,
     pub approvals_required: Option<u32>,
 }

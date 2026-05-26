@@ -1,6 +1,6 @@
 //! GitLab provider: a self-contained vertical mirroring `github/`, reading
-//! `.repo.gitlab.yml` and reusing `glab`'s credentials. Phase 2 implements the
-//! read (audit/diff) path; `apply` is not yet wired (Phase 3).
+//! `.repo.gitlab.yml` and reusing `glab`'s credentials. It runs the
+//! audit/diff/apply pipeline, executing its own changes via the rule actions.
 
 mod api;
 mod auth;
@@ -30,11 +30,6 @@ fn to_shared(r: &RuleResult) -> Finding {
 
 pub fn run(mode: Mode, config_path: &Path, args: &Args) -> Result<Outcome> {
     let effective_mode = if mode == Mode::Apply && args.dry_run { Mode::Diff } else { mode };
-    if effective_mode == Mode::Apply {
-        return Err(anyhow!(
-            "GitLab apply is not yet implemented (Phase 3); use `audit` or `diff`"
-        ));
-    }
     let defer_rendering = args.format != Format::Text;
 
     let cfg = config::load(config_path)?;
@@ -52,6 +47,7 @@ pub fn run(mode: Mode, config_path: &Path, args: &Args) -> Result<Outcome> {
     eprintln!("authenticated as {user} on {host}");
 
     let mut any_error = false;
+    let mut any_apply_error = false;
     let mut all_findings: Vec<(String, Vec<Finding>)> = Vec::new();
 
     for name in target_projects(&cfg, args)? {
@@ -66,8 +62,14 @@ pub fn run(mode: Mode, config_path: &Path, args: &Args) -> Result<Outcome> {
 
         if !defer_rendering {
             render_table(&results);
-            if effective_mode == Mode::Diff {
-                render_planned(&results);
+            match effective_mode {
+                Mode::Audit => {}
+                Mode::Diff => render_actions(&results),
+                Mode::Apply => {
+                    if !execute_actions(&client, &project_path, &results) {
+                        any_apply_error = true;
+                    }
+                }
             }
         }
 
@@ -78,7 +80,7 @@ pub fn run(mode: Mode, config_path: &Path, args: &Args) -> Result<Outcome> {
         namespace: cfg.group,
         findings: all_findings,
         any_error,
-        any_apply_error: false,
+        any_apply_error,
     })
 }
 
@@ -124,14 +126,34 @@ fn render_table(results: &[RuleResult]) {
     }
 }
 
-fn render_planned(results: &[RuleResult]) {
-    let planned: Vec<_> = results.iter().flat_map(|r| r.planned.iter().map(move |p| (r.rule, p))).collect();
-    if planned.is_empty() {
+fn render_actions(results: &[RuleResult]) {
+    let actions: Vec<_> = results.iter().flat_map(|r| r.actions.iter().map(move |a| (r.rule, a))).collect();
+    if actions.is_empty() {
         println!("\n(no changes)");
         return;
     }
-    println!("\nplanned changes (apply not yet implemented for GitLab):");
-    for (rule, p) in planned {
-        println!("  [{rule}] {p}");
+    println!("\nplanned changes:");
+    for (rule, action) in actions {
+        println!("  [{rule}] {}", action.summary());
     }
+}
+
+fn execute_actions(client: &api::Client, project: &str, results: &[RuleResult]) -> bool {
+    let actions: Vec<_> = results.iter().flat_map(|r| r.actions.iter().map(move |a| (r.rule, a))).collect();
+    if actions.is_empty() {
+        println!("\n(nothing to apply)");
+        return true;
+    }
+    println!("\napplying:");
+    let mut all_ok = true;
+    for (rule, action) in actions {
+        match action.execute(client, project) {
+            Ok(()) => println!("  ✓ [{rule}] {}", action.summary()),
+            Err(e) => {
+                println!("  ✗ [{rule}] {}: {e}", action.summary());
+                all_ok = false;
+            }
+        }
+    }
+    all_ok
 }
