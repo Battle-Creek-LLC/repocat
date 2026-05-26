@@ -161,14 +161,29 @@ fn run(mode: Mode, raw_args: &[String]) -> Result<ExitCode> {
 
 fn run_init(raw_args: &[String]) -> Result<ExitCode> {
     let mut preset = Preset::Standard;
-    let mut path = PathBuf::from(DEFAULT_CONFIG);
+    let mut explicit_path: Option<PathBuf> = None;
     let mut force = false;
     let mut to_stdout = false;
     let mut org_override: Option<String> = None;
+    // Default provider is github, preserving the prior single-provider behavior.
+    let mut provider = Provider::GitHub;
 
     let mut i = 0;
     while i < raw_args.len() {
         match raw_args[i].as_str() {
+            "--provider" => {
+                i += 1;
+                let v = raw_args.get(i).ok_or_else(|| anyhow!("--provider needs a value"))?;
+                provider = match v.as_str() {
+                    "github" => Provider::GitHub,
+                    "gitlab" => Provider::GitLab,
+                    other => {
+                        return Err(anyhow!(
+                            "unknown --provider `{other}` (expected `github` or `gitlab`)"
+                        ))
+                    }
+                };
+            }
             "--preset" => {
                 i += 1;
                 let v = raw_args.get(i).ok_or_else(|| anyhow!("--preset needs a value"))?;
@@ -176,9 +191,9 @@ fn run_init(raw_args: &[String]) -> Result<ExitCode> {
             }
             "-f" | "--file" => {
                 i += 1;
-                path = PathBuf::from(
+                explicit_path = Some(PathBuf::from(
                     raw_args.get(i).ok_or_else(|| anyhow!("--file needs a value"))?,
-                );
+                ));
             }
             "--stdout" => to_stdout = true,
             "--force" => force = true,
@@ -193,14 +208,46 @@ fn run_init(raw_args: &[String]) -> Result<ExitCode> {
         i += 1;
     }
 
-    let org = match org_override {
-        Some(o) => o,
-        None => github::git::detect_org().map_err(|e| {
-            anyhow!("could not detect org from git remote ({e}); pass --org <name>")
-        })?,
+    // The default output path follows the chosen provider; an explicit `-f`
+    // always wins. `--preset` only applies to github; for gitlab it is ignored.
+    let (rendered, path) = match provider {
+        Provider::GitHub => {
+            let path = explicit_path.unwrap_or_else(|| PathBuf::from(provider::GITHUB_CONFIG));
+            let org = match org_override {
+                Some(o) => o,
+                None => github::git::detect_org().map_err(|e| {
+                    anyhow!("could not detect org from git remote ({e}); pass --org <name>")
+                })?,
+            };
+            (github::init_template(preset, &org), path)
+        }
+        Provider::GitLab => {
+            let path = explicit_path.unwrap_or_else(|| PathBuf::from(provider::GITLAB_CONFIG));
+            // Resolve group/host/project. With `--org`, the group is fixed; we
+            // still try detection to fill in a real host/project, but fall back
+            // to placeholders rather than failing. Without `--org`, detection is
+            // required — a clear error points the user at `--org` + manual edits.
+            let (group, host, project) = match org_override {
+                Some(group) => {
+                    let (host, project) = gitlab::init::detect()
+                        .map(|(host, _ns, project)| (host, project))
+                        .unwrap_or_else(|_| ("gitlab.com".to_string(), "your-project".to_string()));
+                    (group, host, project)
+                }
+                None => {
+                    let (host, ns, project) = gitlab::init::detect().map_err(|e| {
+                        anyhow!(
+                            "could not detect GitLab namespace from git remote ({e}); \
+                             pass --org <group> and edit the generated {} by hand",
+                            provider::GITLAB_CONFIG
+                        )
+                    })?;
+                    (ns, host, project)
+                }
+            };
+            (gitlab::init::template(&group, &host, &project), path)
+        }
     };
-
-    let rendered = github::init_template(preset, &org);
 
     if to_stdout {
         print!("{rendered}");
@@ -218,9 +265,18 @@ fn run_init(raw_args: &[String]) -> Result<ExitCode> {
     eprintln!("wrote {}", path.display());
 
     // Validate by running the same loader the other commands use.
-    github::config::load(&path).with_context(|| {
-        format!("template wrote but failed to re-parse from {}", path.display())
-    })?;
+    match provider {
+        Provider::GitHub => {
+            github::config::load(&path).with_context(|| {
+                format!("template wrote but failed to re-parse from {}", path.display())
+            })?;
+        }
+        Provider::GitLab => {
+            gitlab::init::validate(&path).with_context(|| {
+                format!("template wrote but failed to re-parse from {}", path.display())
+            })?;
+        }
+    }
     Ok(ExitCode::SUCCESS)
 }
 

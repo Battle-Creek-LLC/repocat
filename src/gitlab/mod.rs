@@ -5,6 +5,7 @@
 mod api;
 mod auth;
 mod config;
+pub mod init;
 mod resolve;
 mod rules;
 
