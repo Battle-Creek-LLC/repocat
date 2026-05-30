@@ -1,0 +1,32 @@
+# Self-contained crate: the empty [workspace] table makes this its own workspace
+# root so it is never pulled into repocat's package build/release.
+[workspace]
+
+[package]
+name = "bcl-repobot"
+version = "0.1.0"
+edition = "2024"
+description = "GitHub App / bot identity CLI — mints an installation token and reviews PRs as the bot."
+license = "MIT"
+repository = "https://github.com/Battle-Creek-LLC/repocat"
+readme = "README.md"
+categories = ["command-line-utilities", "development-tools"]
+keywords = ["github", "bot", "app", "pull-request", "cli"]
+
+# Published to crates.io as `bcl-repobot`; the installed binary stays `repobot`.
+[[bin]]
+name = "repobot"
+path = "src/main.rs"
+
+[dependencies]
+ureq = { version = "2", features = ["json"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml_ng = "0.10"
+jsonwebtoken = "9"
+anyhow = "1"
+
+[dev-dependencies]
+# Generate a throwaway RSA key in JWT unit tests — never the real App key.
+rsa = { version = "0.9", features = ["pem"] }
+rand = "0.8"
