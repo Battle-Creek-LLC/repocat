@@ -20,6 +20,10 @@ pub struct ChangedFile {
     /// Absent for binary files and files too large for GitHub to diff.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub patch: Option<String>,
+    /// Every other field GitHub returns (`previous_filename`, `changes`, `sha`,
+    /// the `*_url`s, …), kept so `pr files --json` round-trips the full object.
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 pub fn show(client: &Client, org: &str, repo: &str, pr: u64, json: bool) -> Result<()> {
@@ -74,9 +78,23 @@ pub fn diff(client: &Client, org: &str, repo: &str, pr: u64) -> Result<()> {
     Ok(())
 }
 
+/// GitHub caps the PR files endpoint at this many entries.
+const FILES_ENDPOINT_CAP: usize = 3000;
+
 /// Fetch all changed files (paginated). Reused by `review` for anchoring.
 pub fn fetch_files(client: &Client, org: &str, repo: &str, pr: u64) -> Result<Vec<ChangedFile>> {
-    client.get_paginated_json(&format!("/repos/{org}/{repo}/pulls/{pr}/files"))
+    let files: Vec<ChangedFile> =
+        client.get_paginated_json(&format!("/repos/{org}/{repo}/pulls/{pr}/files"))?;
+    // Beyond the cap GitHub silently truncates the list; warn so a rejected
+    // inline comment on an omitted file isn't mistaken for a bad anchor.
+    if files.len() >= FILES_ENDPOINT_CAP {
+        eprintln!(
+            "warning: GitHub caps the changed-files list at {FILES_ENDPOINT_CAP}; this PR \
+             reached that limit, so some files may be omitted and inline comments on them \
+             will be rejected as not in the diff"
+        );
+    }
+    Ok(files)
 }
 
 pub fn files(client: &Client, org: &str, repo: &str, pr: u64, json: bool) -> Result<()> {
@@ -116,8 +134,15 @@ pub fn comments(client: &Client, org: &str, repo: &str, pr: u64, json: bool) -> 
             .and_then(|x| x.as_str())
             .unwrap_or("");
         let path = get("path");
-        match c.get("line").and_then(|x| x.as_u64()) {
-            Some(line) => println!("[{id}] {login} {path}:{line}"),
+        // Outdated comments (after a force-push) carry line=null with the anchor
+        // in original_line; fall back to it so the location isn't lost.
+        let line = c.get("line").and_then(|x| x.as_u64());
+        let original = c.get("original_line").and_then(|x| x.as_u64());
+        match line.or(original) {
+            Some(l) => {
+                let tag = if line.is_none() { " (outdated)" } else { "" };
+                println!("[{id}] {login} {path}:{l}{tag}");
+            }
             None => println!("[{id}] {login} {path}"),
         }
         let body = get("body");

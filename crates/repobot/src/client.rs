@@ -84,7 +84,7 @@ impl Client {
         let url = Self::url(path);
         let resp = self
             .request("POST", &url, "application/vnd.github+json")
-            .send_json(body.clone())
+            .send_json(body)
             .map_err(|e| map_err("POST", &url, e))?;
         resp.into_json()
             .map_err(|e| anyhow!("decoding POST {url} response: {e}"))

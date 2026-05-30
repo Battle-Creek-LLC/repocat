@@ -24,7 +24,7 @@
 
 ```
 AUTH
-  repobot token [<org/repo>]                 Mint a ~9-min App installation token.
+  repobot token [<org/repo>]                 Mint a short-lived (~1h) App installation token.
 
 READ  (gather context, as the bot)
   repobot pr show     <pr> [<org/repo>]      PR metadata: title, body, author,

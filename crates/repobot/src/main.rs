@@ -49,7 +49,7 @@ fn main() -> ExitCode {
 fn print_usage() {
     eprintln!(
         "usage:\n  \
-         repobot token [<org/repo>]                         mint a ~9-min App installation token\n  \
+         repobot token [<org/repo>]                         mint a short-lived (~1h) App installation token\n  \
          repobot pr show     <pr> [<org/repo>] [--json]     PR metadata\n  \
          repobot pr diff     <pr> [<org/repo>]              unified diff\n  \
          repobot pr files    <pr> [<org/repo>] [--json]     changed files (path/status/+/-/patch)\n  \
@@ -102,6 +102,12 @@ fn run_pr(args: &[String]) -> Result<()> {
         .first()
         .ok_or_else(|| anyhow!("usage: repobot pr <show|diff|files|comments|review> <pr> ..."))?
         .clone();
+    if !matches!(
+        sub.as_str(),
+        "show" | "diff" | "files" | "comments" | "review"
+    ) {
+        return Err(anyhow!("unknown pr subcommand: {sub}"));
+    }
     let rest = &args[1..];
 
     let mut pr: Option<u64> = None;
@@ -110,13 +116,18 @@ fn run_pr(args: &[String]) -> Result<()> {
     let mut dry_run = false;
     let mut file: Option<PathBuf> = None;
     let mut disposition = Disposition::Comment;
+    let mut saw_dry_run = false;
+    let mut saw_disposition = false;
 
     let mut i = 0;
     while i < rest.len() {
         let a = rest[i].as_str();
         match a {
             "--json" => json = true,
-            "--dry-run" => dry_run = true,
+            "--dry-run" => {
+                dry_run = true;
+                saw_dry_run = true;
+            }
             "-f" | "--file" => {
                 i += 1;
                 file = Some(PathBuf::from(
@@ -137,6 +148,7 @@ fn run_pr(args: &[String]) -> Result<()> {
                         ));
                     }
                 };
+                saw_disposition = true;
             }
             other if other.starts_with('-') => return Err(anyhow!("unknown flag: {other}")),
             other if pr.is_none() => {
@@ -150,6 +162,22 @@ fn run_pr(args: &[String]) -> Result<()> {
             other => return Err(anyhow!("unexpected argument: {other}")),
         }
         i += 1;
+    }
+
+    // Flags are verb-specific; reject any the chosen verb doesn't accept rather
+    // than silently ignoring them.
+    let is_review = sub == "review";
+    if json && !matches!(sub.as_str(), "show" | "files" | "comments") {
+        return Err(anyhow!("`--json` is not valid for `pr {sub}`"));
+    }
+    if saw_dry_run && !is_review {
+        return Err(anyhow!("`--dry-run` is only valid for `pr review`"));
+    }
+    if saw_disposition && !is_review {
+        return Err(anyhow!("`--disposition` is only valid for `pr review`"));
+    }
+    if file.is_some() && !is_review {
+        return Err(anyhow!("`-f`/`--file` is only valid for `pr review`"));
     }
 
     let pr = pr.ok_or_else(|| anyhow!("missing <pr> number"))?;
